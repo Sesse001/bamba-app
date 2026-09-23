@@ -10,10 +10,28 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, Typography, Shadows } from '../../theme';
+import { testConnection } from '../../services/firebase';
 
 export default function DesignShowcase() {
   const [email, setEmail] = useState('');
   const [pressed, setPressed] = useState(false);
+
+  // Firebase connection test state
+  const [fbState, setFbState] = useState('idle'); // idle | loading | success | error
+  const [fbResult, setFbResult] = useState(null);
+
+  const runFirebaseTest = async () => {
+    setFbState('loading');
+    setFbResult(null);
+    const result = await testConnection();
+    if (result.ok) {
+      setFbState('success');
+      setFbResult(result.data);
+    } else {
+      setFbState('error');
+      setFbResult(result.error);
+    }
+  };
 
   const colorSwatches = [
     { name: 'primary', value: Colors.primary },
@@ -40,6 +58,57 @@ export default function DesignShowcase() {
 
         <Text style={styles.pageTitle}>🎨 Design System</Text>
         <Text style={styles.pageSubtitle}>Bamba V2 — Foundation</Text>
+
+        {/* FIREBASE CONNECTION TEST */}
+        <Text style={styles.sectionLabel}>FIREBASE TEST</Text>
+        <View style={[styles.card, styles.testCard]}>
+          <Text style={[Typography.body, styles.textPrimary]}>
+            Tap to write & read a test doc in Firestore.
+          </Text>
+
+          <Pressable
+            style={[
+              styles.btnPrimary,
+              fbState === 'loading' && { opacity: 0.6 },
+            ]}
+            onPress={runFirebaseTest}
+            disabled={fbState === 'loading'}
+          >
+            {fbState === 'loading' ? (
+              <ActivityIndicator color={Colors.text} size="small" />
+            ) : (
+              <Text style={styles.btnPrimaryText}>Run Connection Test</Text>
+            )}
+          </Pressable>
+
+          {fbState === 'success' && (
+            <View style={styles.testSuccess}>
+              <Text style={[Typography.bodyBold, { color: Colors.success }]}>
+                ✅ Connected
+              </Text>
+              <Text style={[Typography.tiny, styles.textSecondary]}>
+                client: {fbResult?.client}
+              </Text>
+              <Text style={[Typography.tiny, styles.textSecondary]}>
+                platform: {fbResult?.platform}
+              </Text>
+              <Text style={[Typography.tiny, styles.textSecondary]}>
+                lastPing: {fbResult?.lastPing?.toDate?.()?.toISOString?.() ?? 'pending'}
+              </Text>
+            </View>
+          )}
+
+          {fbState === 'error' && (
+            <View style={styles.testError}>
+              <Text style={[Typography.bodyBold, { color: Colors.danger }]}>
+                ❌ Connection failed
+              </Text>
+              <Text style={[Typography.tiny, styles.textSecondary]}>
+                {String(fbResult)}
+              </Text>
+            </View>
+          )}
+        </View>
 
         {/* COLORS */}
         <Text style={styles.sectionLabel}>COLORS</Text>
@@ -311,11 +380,34 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-around',
   },
+  testCard: {
+    borderColor: Colors.primary,
+  },
+  testSuccess: {
+    marginTop: Spacing.md,
+    padding: Spacing.md,
+    borderRadius: Radius.md,
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    borderWidth: 1,
+    borderColor: Colors.success,
+    gap: Spacing.xs,
+  },
+  testError: {
+    marginTop: Spacing.md,
+    padding: Spacing.md,
+    borderRadius: Radius.md,
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderWidth: 1,
+    borderColor: Colors.danger,
+    gap: Spacing.xs,
+  },
   btnPrimary: {
     backgroundColor: Colors.primary,
     paddingVertical: Spacing.lg,
     borderRadius: Radius.md,
     alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 52,
   },
   btnPressed: {
     opacity: 0.8,
