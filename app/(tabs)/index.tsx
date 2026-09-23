@@ -11,6 +11,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, Typography, Shadows } from '../../theme';
 import { testConnection } from '../../services/firebase';
+import { signInAsGuest } from '../../services/auth';
 
 export default function DesignShowcase() {
   const [email, setEmail] = useState('');
@@ -30,6 +31,26 @@ export default function DesignShowcase() {
     } else {
       setFbState('error');
       setFbResult(result.error);
+    }
+  };
+
+  // Auth test state
+  const [authState, setAuthState] = useState('idle'); // idle | loading | success | error
+  const [authResult, setAuthResult] = useState(null);
+
+  const runGuestAuthTest = async () => {
+    setAuthState('loading');
+    setAuthResult(null);
+    const result = await signInAsGuest();
+    if (result.ok) {
+      setAuthState('success');
+      setAuthResult({
+        uid: result.user.uid,
+        isAnonymous: result.user.isAnonymous,
+      });
+    } else {
+      setAuthState('error');
+      setAuthResult(result.error);
     }
   };
 
@@ -105,6 +126,54 @@ export default function DesignShowcase() {
               </Text>
               <Text style={[Typography.tiny, styles.textSecondary]}>
                 {String(fbResult)}
+              </Text>
+            </View>
+          )}
+        </View>
+
+        {/* AUTH TEST (temporary) */}
+        <Text style={styles.sectionLabel}>AUTH TEST</Text>
+        <View style={[styles.card, styles.testCard]}>
+          <Text style={[Typography.body, styles.textPrimary]}>
+            Tap to create an anonymous guest user.
+          </Text>
+
+          <Pressable
+            style={[
+              styles.btnPrimary,
+              authState === 'loading' && { opacity: 0.6 },
+            ]}
+            onPress={runGuestAuthTest}
+            disabled={authState === 'loading'}
+          >
+            {authState === 'loading' ? (
+              <ActivityIndicator color={Colors.text} size="small" />
+            ) : (
+              <Text style={styles.btnPrimaryText}>Test Guest Sign-In</Text>
+            )}
+          </Pressable>
+
+          {authState === 'success' && (
+            <View style={styles.testSuccess}>
+              <Text style={[Typography.bodyBold, { color: Colors.success }]}>
+                ✅ Guest signed in
+              </Text>
+              <Text style={[Typography.tiny, styles.textSecondary]}>
+                uid: {authResult?.uid}
+              </Text>
+              <Text style={[Typography.tiny, styles.textSecondary]}>
+                isAnonymous: {String(authResult?.isAnonymous)}
+              </Text>
+            </View>
+          )}
+
+          {authState === 'error' && (
+            <View style={styles.testError}>
+              <Text style={[Typography.bodyBold, { color: Colors.danger }]}>
+                ❌ Auth failed
+              </Text>
+              <Text style={[Typography.tiny, styles.textSecondary]}>
+                {String(authResult)}
               </Text>
             </View>
           )}
