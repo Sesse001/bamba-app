@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%234F46E5'/><text x='50' y='68' font-size='50' text-anchor='middle' fill='white' font-family='Arial' font-weight='bold'>B</text></svg>">
+    <title>Bamba — Connect Language. Share Knowledge.</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0F0F0F; color: #FFFFFF; line-height: 1.6; }
+        
+        nav { background: #1A1A1A; border-bottom: 1px solid #222; padding: 16px 24px; display: flex; justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100; }
+        nav .logo { font-size: 24px; font-weight: bold; color: #FFFFFF; }
+        nav .logo span { color: #4F46E5; }
+        nav .links { display: flex; gap: 24px; }
+        nav .links a { color: #999; text-decoration: none; font-size: 14px; transition: color 0.2s; }
+        nav .links a:hover { color: #FFFFFF; }
+        nav .cta { background: #4F46E5; color: #FFFFFF; padding: 10px 20px; border-radius: 20px; text-decoration: none; font-size: 14px; font-weight: 600; transition: opacity 0.2s; }
+        nav .cta:hover { opacity: 0.9; }
+
+        .hero { text-align: center; padding: 100px 24px 80px; }
+        .hero h1 { font-size: 48px; font-weight: bold; margin-bottom: 16px; }
+        .hero h1 span { color: #4F46E5; }
+        .hero p { font-size: 18px; color: #999; max-width: 600px; margin: 0 auto 32px; }
+        .hero .buttons { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+        .hero .btn-primary { background: #4F46E5; color: #FFFFFF; padding: 14px 32px; border-radius: 12px; text-decoration: none; font-size: 16px; font-weight: bold; cursor: pointer; border: none; display: inline-block; }
+        .hero .btn-secondary { background: #1A1A1A; color: #FFFFFF; padding: 14px 32px; border-radius: 12px; text-decoration: none; font-size: 16px; border: 1px solid #333; }
+
+        section { padding: 80px 24px; }
+        section h2 { font-size: 32px; text-align: center; margin-bottom: 48px; }
+        .container { max-width: 1000px; margin: 0 auto; }
+
+        .mission-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; }
+        .mission-card { background: #1A1A1A; border-radius: 14px; padding: 28px; border: 1px solid #222; text-align: center; }
+        .mission-card .icon { font-size: 40px; margin-bottom: 14px; }
+        .mission-card h3 { font-size: 18px; margin-bottom: 10px; }
+        .mission-card p { font-size: 14px; color: #999; }
+
+        .steps { display: flex; flex-direction: column; gap: 20px; }
+        .step { background: #1A1A1A; border-radius: 14px; padding: 24px; border: 1px solid #222; display: flex; gap: 20px; align-items: center; }
+        .step .step-number { background: #4F46E5; color: #FFFFFF; width: 48px; height: 48px; border-radius: 24px; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; flex-shrink: 0; }
+        .step h3 { font-size: 18px; margin-bottom: 6px; }
+        .step p { font-size: 14px; color: #999; }
+
+        .confidence-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }
+        .confidence-card { background: #1A1A2E; border-radius: 14px; padding: 24px; border: 1px solid #2A2A4E; text-align: center; }
+        .confidence-card .badge { display: inline-block; padding: 6px 14px; border-radius: 8px; font-size: 13px; font-weight: bold; margin-bottom: 12px; }
+        .confidence-card .badge.low { background: rgba(239,68,68,0.15); color: #EF4444; }
+        .confidence-card .badge.medium { background: rgba(245,158,11,0.15); color: #F59E0B; }
+        .confidence-card .badge.high { background: rgba(34,197,94,0.15); color: #22C55E; }
+        .confidence-card p { font-size: 14px; color: #999; }
+
+        .ecosystem-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+        .ecosystem-card { background: #1A1A1A; border-radius: 14px; padding: 28px; border: 1px solid #222; }
+        .ecosystem-card .ecosystem-icon { font-size: 36px; margin-bottom: 12px; }
+        .ecosystem-card h3 { font-size: 20px; margin-bottom: 4px; }
+
+        .download { background: #1A1A2E; border-radius: 20px; padding: 48px; text-align: center; border: 1px solid #2A2A4E; }
+        .download h2 { margin-bottom: 12px; }
+        .download p { color: #999; margin-bottom: 24px; }
+        .download .btn-primary { display: inline-block; }
+
+        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 1000; justify-content: center; align-items: center; }
+        .modal.active { display: flex; }
+        .modal-content { background: #1A1A1A; border-radius: 20px; padding: 32px; text-align: center; border: 1px solid #333; max-width: 350px; }
+        .modal-content img { width: 200px; height: 200px; margin: 16px 0; }
+        .modal-content h3 { font-size: 20px; margin-bottom: 8px; }
+        .modal-content p { font-size: 14px; color: #999; margin-bottom: 16px; word-break: break-all; }
+        .modal-close { background: #4F46E5; color: #FFFFFF; padding: 10px 24px; border-radius: 10px; border: none; font-size: 14px; font-weight: 600; cursor: pointer; }
+
+        footer { background: #1A1A1A; border-top: 1px solid #222; padding: 24px; text-align: center; }
+        footer p { color: #666; font-size: 13px; }
+
+        @media (max-width: 600px) {
+            .hero h1 { font-size: 32px; }
+            nav .links { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <nav>
+        <div class="logo">🌍 <span>Bamba</span></div>
+        <div class="links">
+            <a href="#mission">Mission</a>
+            <a href="#how">How It Works</a>
+            <a href="#trust">Trust</a>
+            <a href="#ecosystem">Ecosystem</a>
+            <a href="#download">Download</a>
+        </div>
+        <a href="https://github.com/Sesse001/bamba-app/releases/download/v1.3.0/application-71f4607d-71aa-40bd-9508-f802111e5613.apk" class="cta download-link">Get Started</a>
+    </nav>
+
+    <section class="hero">
+        <h1>Connect Language.<br><span>Share Knowledge.</span></h1>
+        <p>Help connect South Africa's languages. One contribution at a time. Join a community of contributors connecting language for future generations.</p>
+        <div class="buttons">
+            <a href="https://github.com/Sesse001/bamba-app/releases/download/v1.3.0/application-71f4607d-71aa-40bd-9508-f802111e5613.apk" class="btn-primary download-link">Download for Android</a>
+            <a href="#mission" class="btn-secondary">Learn More</a>
+        </div>
+    </section>
+
+    <section id="mission">
+        <div class="container">
+            <h2>Why Bamba Exists</h2>
+            <div class="mission-grid">
+                <div class="mission-card">
+                    <div class="icon">🌍</div>
+                    <h3>Connect Languages</h3>
+                    <p>Every translation helps connect South Africa's languages, regional expressions, and cultural knowledge.</p>
+                </div>
+                <div class="mission-card">
+                    <div class="icon">🔬</div>
+                    <h3>Support Research</h3>
+                    <p>Researchers use this data to understand how language changes across provinces and generations.</p>
+                </div>
+                <div class="mission-card">
+                    <div class="icon">🤝</div>
+                    <h3>Community-Powered</h3>
+                    <p>The community reviews, verifies, and improves translations together. Every voice matters.</p>
+                </div>
+                <div class="mission-card">
+                    <div class="icon">📚</div>
+                    <h3>Education & Future Tech</h3>
+                    <p>Data supports language education and future technologies built on real human knowledge.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="how" style="background: #0A0A0A;">
+        <div class="container">
+            <h2>How It Works</h2>
+            <div class="steps">
+                <div class="step">
+                    <div class="step-number">1</div>
+                    <div>
+                        <h3>Create Your Profile</h3>
+                        <p>Tell us your province, age group, and home language. This helps us give you the right translations.</p>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-number">2</div>
+                    <div>
+                        <h3>Translate Daily</h3>
+                        <p>Receive phrases in English and translate them into your home language. Pick the context — casual, formal, or slang.</p>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-number">3</div>
+                    <div>
+                        <h3>Review & Verify</h3>
+                        <p>Help verify other contributors' translations. Your reviews build trust in the platform.</p>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-number">4</div>
+                    <div>
+                        <h3>See Your Impact</h3>
+                        <p>Track your contributions, see community activity across provinces, and watch the language library grow.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="trust">
+        <div class="container">
+            <h2>How We Build Trust</h2>
+            <div class="confidence-grid">
+                <div class="confidence-card">
+                    <div class="badge low">Low Confidence</div>
+                    <p>One contributor has submitted this translation. More reviews needed.</p>
+                </div>
+                <div class="confidence-card">
+                    <div class="badge medium">Medium Confidence</div>
+                    <p>Multiple contributors agree on similar translations.</p>
+                </div>
+                <div class="confidence-card">
+                    <div class="badge high">High Confidence</div>
+                    <p>Strong agreement across reviewers from different provinces.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="ecosystem">
+        <div class="container">
+            <h2>Research Ecosystem</h2>
+            <p style="text-align:center;color:#999;margin-bottom:40px;">Bamba's mission is inspired by and aligned with South Africa's leading language research institutions.</p>
+            <div class="ecosystem-grid">
+                <div class="ecosystem-card">
+                    <div class="ecosystem-icon">📚</div>
+                    <h3>SADiLaR</h3>
+                    <p style="color:#4F46E5;font-size:13px;margin-bottom:12px;">South African Centre for Digital Language Resources</p>
+                    <p style="font-size:14px;color:#999;line-height:22px;">South Africa's national research infrastructure for digital language resources. Develops, preserves, and shares digital language technologies for all official languages.</p>
+                    <a href="https://sadilar.org" target="_blank" style="color:#818CF8;font-size:13px;font-weight:600;text-decoration:none;display:inline-block;margin-top:12px;">Visit SADiLaR →</a>
+                </div>
+                <div class="ecosystem-card">
+                    <div class="ecosystem-icon">🚀</div>
+                    <h3>ESCALATOR</h3>
+                    <p style="color:#4F46E5;font-size:13px;margin-bottom:12px;">SADiLaR's Flagship Capacity Development Programme</p>
+                    <p style="font-size:14px;color:#999;line-height:22px;">Builds an inclusive community of practice in Digital Humanities. Provides training, mentorship, and digital skills development for researchers, students, and educators.</p>
+                    <a href="https://sadilar.org/en/escalator/" target="_blank" style="color:#818CF8;font-size:13px;font-weight:600;text-decoration:none;display:inline-block;margin-top:12px;">Visit ESCALATOR →</a>
+                </div>
+            </div>
+            <p style="text-align:center;font-size:12px;color:#666;margin-top:30px;font-style:italic;">
+                Bamba is an independent research and language technology initiative. Our work is aligned with the missions of SADiLaR and the ESCALATOR programme. Any formal partnerships will be announced if established.
+            </p>
+        </div>
+    </section>
+
+    <section id="download">
+        <div class="container">
+            <div class="download">
+                <h2>Ready to Contribute?</h2>
+                <p>Download Bamba for Android and start connecting South Africa's languages today.</p>
+                <a href="https://github.com/Sesse001/bamba-app/releases/download/v1.3.0/application-71f4607d-71aa-40bd-9508-f802111e5613.apk" class="btn-primary download-link">📱 Download for Android</a>
+                <p style="margin-top: 16px; font-size: 13px; color: #666;">iOS users: Install <strong>Expo Go</strong> from the App Store and scan the QR code.</p>
+            </div>
+        </div>
+    </section>
+
+    <div class="modal" id="qrModal">
+        <div class="modal-content">
+            <h3>Scan to Download</h3>
+            <p>Point your phone's camera at this QR code</p>
+            <img id="qrImage" src="" alt="QR Code">
+            <p style="font-size:12px;color:#666;">Or open this link on your phone:<br><span id="qrUrl" style="color:#818CF8; word-break:break-all;"></span></p>
+            <button class="modal-close" onclick="closeModal()">Close</button>
+        </div>
+    </div>
+
+    <footer>
+        <p>🌍 Bamba — Connect Language. Share Knowledge. © 2026</p>
+    </footer>
+
+    <script>
+        const BUILD_URL = "https://github.com/Sesse001/bamba-app/releases/download/v1.3.0/application-71f4607d-71aa-40bd-9508-f802111e5613.apk";
+        const QR_API = "https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=" + encodeURIComponent(BUILD_URL);
+
+        function isMobile() {
+            return /Android|iPhone|iPad|iPod|webOS/i.test(navigator.userAgent);
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            var links = document.querySelectorAll('.download-link');
+            links.forEach(function(link) {
+                link.addEventListener('click', function(e) {
+                    if (!isMobile()) {
+                        e.preventDefault();
+                        document.getElementById('qrImage').src = QR_API;
+                        document.getElementById('qrUrl').textContent = BUILD_URL;
+                        document.getElementById('qrModal').classList.add('active');
+                    }
+                });
+            });
+        });
+
+        function closeModal() {
+            document.getElementById('qrModal').classList.remove('active');
+        }
+
+        document.getElementById('qrModal').addEventListener('click', function(e) {
+            if (e.target === this) closeModal();
+        });
+    </script>
+</body>
+</html>
