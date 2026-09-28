@@ -72,8 +72,7 @@ export default function LanguagePicker() {
     const result = await setActiveLanguageId(user.uid, selectedId);
 
     if (result.ok) {
-      // Placeholder route to showcase — M4 replaces with real home screen.
-      router.replace('/dev/showcase');
+      router.replace('/(tabs)/home');
     } else {
       setError(result.error);
       setSaving(false);

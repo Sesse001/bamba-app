@@ -1,6 +1,7 @@
 // app/(tabs)/_layout.tsx
-// Tab bar is hidden — Bamba uses a custom in-screen navigation pattern
-// rather than the native tab bar. This layout just declares the screens.
+// Tab bar hidden — Bamba uses custom in-screen navigation.
+// This layout declares all screens under (tabs).
+// Routing logic (which screen to show) lives in the screens themselves.
 
 import { Tabs } from 'expo-router';
 
@@ -13,6 +14,8 @@ export default function TabLayout() {
       }}
     >
       <Tabs.Screen name="index" />
+      <Tabs.Screen name="home" />
+      <Tabs.Screen name="learn" />
       <Tabs.Screen name="explore" />
     </Tabs>
   );
