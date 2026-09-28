@@ -1,381 +1,183 @@
-import { useState } from 'react';
+// app/(tabs)/index.tsx
+// Language picker — first screen after sign-in.
+// User taps a language to select, then taps Continue to commit.
+//
+// Selection is written to:
+//   - AsyncStorage (instant cache)
+//   - Firestore users/{uid}.activeLanguageId (source of truth)
+
+import { useState, useEffect } from 'react';
 import {
   View,
   Text,
-  TextInput,
   Pressable,
-  ScrollView,
   StyleSheet,
   ActivityIndicator,
+  ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Colors, Spacing, Radius, Typography, Shadows } from '../../theme';
-import { testConnection } from '../../services/firebase';
-import { signInAsGuest, signOutUser } from '../../services/auth';
+import { useRouter } from 'expo-router';
+import { Colors, Spacing, Radius, Typography } from '../../theme';
+import { getAllLanguages, setActiveLanguageId } from '../../services/languages';
+import { getCurrentUser } from '../../services/auth';
 
-export default function DesignShowcase() {
-  const [email, setEmail] = useState('');
-  const [pressed, setPressed] = useState(false);
+export default function LanguagePicker() {
+  const router = useRouter();
 
-  // Firebase connection test state
-  const [fbState, setFbState] = useState('idle');
-  const [fbResult, setFbResult] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [languages, setLanguages] = useState([]);
+  const [selectedId, setSelectedId] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
 
-  const runFirebaseTest = async () => {
-    setFbState('loading');
-    setFbResult(null);
-    const result = await testConnection();
+  // Fetch languages on mount
+  useEffect(() => {
+    let mounted = true;
+
+    (async () => {
+      const result = await getAllLanguages();
+      if (!mounted) return;
+
+      if (result.ok) {
+        setLanguages(result.data);
+        // Pre-select the first language
+        if (result.data.length > 0) {
+          setSelectedId(result.data[0].id);
+        }
+        setError(null);
+      } else {
+        setError(result.error);
+      }
+      setLoading(false);
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const handleContinue = async () => {
+    if (!selectedId) return;
+
+    setSaving(true);
+    setError(null);
+
+    const user = getCurrentUser();
+    if (!user) {
+      setError('Not signed in. Please restart the app.');
+      setSaving(false);
+      return;
+    }
+
+    const result = await setActiveLanguageId(user.uid, selectedId);
+
     if (result.ok) {
-      setFbState('success');
-      setFbResult(result.data);
+      // Placeholder route to showcase — M4 replaces with real home screen.
+      router.replace('/dev/showcase');
     } else {
-      setFbState('error');
-      setFbResult(result.error);
+      setError(result.error);
+      setSaving(false);
     }
   };
 
-  // Auth test state
-  const [authState, setAuthState] = useState('idle');
-  const [authResult, setAuthResult] = useState(null);
-
-  const runGuestAuthTest = async () => {
-    setAuthState('loading');
-    setAuthResult(null);
-    const result = await signInAsGuest();
-    if (result.ok) {
-      setAuthState('success');
-      setAuthResult({
-        uid: result.user.uid,
-        isAnonymous: result.user.isAnonymous,
-      });
-    } else {
-      setAuthState('error');
-      setAuthResult(result.error);
-    }
-  };
-
-  const handleSignOut = async () => {
-    await signOutUser();
-    setAuthState('idle');
-    setAuthResult(null);
-  };
-
-  const colorSwatches = [
-    { name: 'primary', value: Colors.primary },
-    { name: 'primaryLight', value: Colors.primaryLight },
-    { name: 'primaryDark', value: Colors.primaryDark },
-    { name: 'background', value: Colors.background },
-    { name: 'surface', value: Colors.surface },
-    { name: 'surfaceLight', value: Colors.surfaceLight },
-    { name: 'text', value: Colors.text },
-    { name: 'textSecondary', value: Colors.textSecondary },
-    { name: 'textMuted', value: Colors.textMuted },
-    { name: 'success', value: Colors.success },
-    { name: 'warning', value: Colors.warning },
-    { name: 'danger', value: Colors.danger },
-    { name: 'info', value: Colors.info },
-    { name: 'gold', value: Colors.gold },
-    { name: 'purple', value: Colors.purple },
-    { name: 'border', value: Colors.border },
-  ];
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.center}>
+          <ActivityIndicator color={Colors.primary} size="large" />
+          <Text style={styles.loadingText}>Loading languages...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
-
-        <Text style={styles.pageTitle}>🎨 Design System</Text>
-        <Text style={styles.pageSubtitle}>Bamba V2 — Foundation</Text>
-
-        {/* FIREBASE CONNECTION TEST */}
-        <Text style={styles.sectionLabel}>FIREBASE TEST</Text>
-        <View style={[styles.card, styles.testCard]}>
-          <Text style={[Typography.body, styles.textPrimary]}>
-            Tap to write & read a test doc in Firestore.
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Header */}
+        <View style={styles.header}>
+          <Text style={styles.title}>Choose a language</Text>
+          <Text style={styles.subtitle}>
+            Start with one — you can add more later.
           </Text>
-
-          <Pressable
-            style={[
-              styles.btnPrimary,
-              fbState === 'loading' && { opacity: 0.6 },
-            ]}
-            onPress={runFirebaseTest}
-            disabled={fbState === 'loading'}
-          >
-            {fbState === 'loading' ? (
-              <ActivityIndicator color={Colors.text} size="small" />
-            ) : (
-              <Text style={styles.btnPrimaryText}>Run Connection Test</Text>
-            )}
-          </Pressable>
-
-          {fbState === 'success' && (
-            <View style={styles.testSuccess}>
-              <Text style={[Typography.bodyBold, { color: Colors.success }]}>
-                ✅ Connected
-              </Text>
-              <Text style={[Typography.tiny, styles.textSecondary]}>
-                client: {fbResult?.client}
-              </Text>
-              <Text style={[Typography.tiny, styles.textSecondary]}>
-                platform: {fbResult?.platform}
-              </Text>
-              <Text style={[Typography.tiny, styles.textSecondary]}>
-                lastPing: {fbResult?.lastPing?.toDate?.()?.toISOString?.() ?? 'pending'}
-              </Text>
-            </View>
-          )}
-
-          {fbState === 'error' && (
-            <View style={styles.testError}>
-              <Text style={[Typography.bodyBold, { color: Colors.danger }]}>
-                ❌ Connection failed
-              </Text>
-              <Text style={[Typography.tiny, styles.textSecondary]}>
-                {String(fbResult)}
-              </Text>
-            </View>
-          )}
         </View>
 
-        {/* AUTH TEST (temporary) */}
-        <Text style={styles.sectionLabel}>AUTH TEST</Text>
-        <View style={[styles.card, styles.testCard]}>
-          <Text style={[Typography.body, styles.textPrimary]}>
-            Tap to create an anonymous guest user.
-          </Text>
+        {/* Language cards */}
+        <View style={styles.languageList}>
+          {languages.map((lang) => {
+            const isSelected = selectedId === lang.id;
+            const regionText = lang.regions?.join(', ') ?? '';
+            const metaLine = [lang.family, regionText]
+              .filter(Boolean)
+              .join(' · ');
 
-          <Pressable
-            style={[
-              styles.btnPrimary,
-              authState === 'loading' && { opacity: 0.6 },
-            ]}
-            onPress={runGuestAuthTest}
-            disabled={authState === 'loading'}
-          >
-            {authState === 'loading' ? (
-              <ActivityIndicator color={Colors.text} size="small" />
-            ) : (
-              <Text style={styles.btnPrimaryText}>Test Guest Sign-In</Text>
-            )}
-          </Pressable>
+            return (
+              <Pressable
+                key={lang.id}
+                style={[
+                  styles.langCard,
+                  isSelected && styles.langCardSelected,
+                ]}
+                onPress={() => setSelectedId(lang.id)}
+                disabled={saving}
+              >
+                <View style={styles.langFlagWrap}>
+                  <Text style={styles.langFlag}>🇿🇦</Text>
+                </View>
 
-          {authState === 'success' && (
-            <View style={styles.testSuccess}>
-              <Text style={[Typography.bodyBold, { color: Colors.success }]}>
-                ✅ Guest signed in
-              </Text>
-              <Text style={[Typography.tiny, styles.textSecondary]}>
-                uid: {authResult?.uid}
-              </Text>
-              <Text style={[Typography.tiny, styles.textSecondary]}>
-                isAnonymous: {String(authResult?.isAnonymous)}
-              </Text>
-            </View>
-          )}
+                <View style={styles.langBody}>
+                  <Text style={styles.langName}>{lang.name}</Text>
+                  <Text style={styles.langNative}>{lang.nativeName}</Text>
+                  {metaLine ? (
+                    <Text style={styles.langMeta}>{metaLine}</Text>
+                  ) : null}
+                </View>
 
-          {authState === 'error' && (
-            <View style={styles.testError}>
-              <Text style={[Typography.bodyBold, { color: Colors.danger }]}>
-                ❌ Auth failed
-              </Text>
-              <Text style={[Typography.tiny, styles.textSecondary]}>
-                {String(authResult)}
-              </Text>
-            </View>
-          )}
-
-          <Pressable
-            style={[styles.btnSecondary, { marginTop: Spacing.md }]}
-            onPress={handleSignOut}
-          >
-            <Text style={styles.btnSecondaryText}>Sign Out (temp)</Text>
-          </Pressable>
+                <View style={styles.checkWrap}>
+                  <View
+                    style={[
+                      styles.checkCircle,
+                      isSelected && styles.checkCircleSelected,
+                    ]}
+                  >
+                    {isSelected && <Text style={styles.checkMark}>✓</Text>}
+                  </View>
+                </View>
+              </Pressable>
+            );
+          })}
         </View>
 
-        {/* COLORS */}
-        <Text style={styles.sectionLabel}>COLORS</Text>
-        <View style={styles.swatchGrid}>
-          {colorSwatches.map((c) => (
-            <View key={c.name} style={styles.swatchItem}>
-              <View style={[styles.swatch, { backgroundColor: c.value }]} />
-              <Text style={styles.swatchName}>{c.name}</Text>
-              <Text style={styles.swatchValue}>{c.value}</Text>
-            </View>
-          ))}
-        </View>
+        {/* Catalogue note — real product state, not placeholder */}
+        <Text style={styles.comingSoon}>
+          8 more South African languages catalogued — coming soon.
+        </Text>
 
-        {/* TYPOGRAPHY */}
-        <Text style={styles.sectionLabel}>TYPOGRAPHY</Text>
-        <View style={styles.card}>
-          <Text style={[Typography.hero, styles.textPrimary]}>Hero Heading</Text>
-          <Text style={[Typography.h1, styles.textPrimary]}>Heading One</Text>
-          <Text style={[Typography.h2, styles.textPrimary]}>Heading Two</Text>
-          <Text style={[Typography.h3, styles.textPrimary]}>Heading Three</Text>
-          <Text style={[Typography.body, styles.textPrimary]}>Body text — regular weight</Text>
-          <Text style={[Typography.bodyBold, styles.textPrimary]}>Body text — bold weight</Text>
-          <Text style={[Typography.caption, styles.textSecondary]}>Caption text for details</Text>
-          <Text style={[Typography.label, styles.textSecondary]}>Section Label</Text>
-          <Text style={[Typography.numberLarge, styles.textPrimary]}>1,234</Text>
-          <Text style={[Typography.numberMedium, styles.textPrimary]}>567</Text>
-        </View>
+        {/* Error */}
+        {error && (
+          <View style={styles.errorBox}>
+            <Text style={styles.errorText}>{String(error)}</Text>
+          </View>
+        )}
 
-        {/* BUTTONS */}
-        <Text style={styles.sectionLabel}>BUTTONS</Text>
-        <View style={styles.card}>
-          <Pressable
-            style={[styles.btnPrimary, pressed && styles.btnPressed]}
-            onPressIn={() => setPressed(true)}
-            onPressOut={() => setPressed(false)}
-          >
-            <Text style={styles.btnPrimaryText}>Primary Button</Text>
-          </Pressable>
-
-          <View style={styles.btnSpacer} />
-
-          <Pressable style={styles.btnSecondary}>
-            <Text style={styles.btnSecondaryText}>Secondary Button</Text>
-          </Pressable>
-
-          <View style={styles.btnSpacer} />
-
-          <Pressable style={styles.btnGhost}>
-            <Text style={styles.btnGhostText}>Ghost Button</Text>
-          </Pressable>
-
-          <View style={styles.btnSpacer} />
-
-          <Pressable style={styles.btnDanger}>
-            <Text style={styles.btnDangerText}>Danger Button</Text>
-          </Pressable>
-
-          <View style={styles.btnSpacer} />
-
-          <Pressable style={styles.btnDisabled} disabled>
-            <Text style={styles.btnDisabledText}>Disabled Button</Text>
-          </Pressable>
-
-          <View style={styles.btnSpacer} />
-
-          <View style={styles.btnLoading}>
+        {/* Continue */}
+        <Pressable
+          style={[
+            styles.btnPrimary,
+            (!selectedId || saving) && styles.btnDisabled,
+          ]}
+          onPress={handleContinue}
+          disabled={!selectedId || saving}
+        >
+          {saving ? (
             <ActivityIndicator color={Colors.text} size="small" />
-            <Text style={styles.btnLoadingText}>Loading...</Text>
-          </View>
-        </View>
-
-        {/* INPUTS */}
-        <Text style={styles.sectionLabel}>INPUTS</Text>
-        <View style={styles.card}>
-          <Text style={styles.inputLabel}>Empty Input</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Type something..."
-            placeholderTextColor={Colors.textMuted}
-          />
-
-          <Text style={styles.inputLabel}>Focused Input</Text>
-          <TextInput
-            style={[styles.input, styles.inputFocused]}
-            value={email}
-            onChangeText={setEmail}
-            placeholder="Tap to focus"
-            placeholderTextColor={Colors.textMuted}
-          />
-
-          <Text style={styles.inputLabel}>Filled Input</Text>
-          <TextInput
-            style={styles.input}
-            value="someone@example.com"
-            editable={false}
-          />
-
-          <Text style={styles.inputLabel}>Error Input</Text>
-          <TextInput
-            style={[styles.input, styles.inputError]}
-            value="invalid-email"
-            editable={false}
-          />
-          <Text style={styles.errorText}>Please enter a valid email</Text>
-
-          <Text style={styles.inputLabel}>Disabled Input</Text>
-          <TextInput
-            style={[styles.input, styles.inputDisabled]}
-            value="Cannot edit"
-            editable={false}
-          />
-
-          <Text style={styles.inputLabel}>Password</Text>
-          <TextInput
-            style={styles.input}
-            value="secretpassword"
-            secureTextEntry
-            editable={false}
-          />
-        </View>
-
-        {/* CARDS */}
-        <Text style={styles.sectionLabel}>CARDS</Text>
-
-        <View style={styles.card}>
-          <Text style={[Typography.h3, styles.textPrimary]}>Standard Card</Text>
-          <Text style={[Typography.caption, styles.textSecondary]}>Basic card with border</Text>
-        </View>
-
-        <View style={[styles.card, Shadows.cardElevated, { marginTop: Spacing.md }]}>
-          <Text style={[Typography.h3, styles.textPrimary]}>Elevated Card</Text>
-          <Text style={[Typography.caption, styles.textSecondary]}>With shadow for depth</Text>
-        </View>
-
-        <Pressable style={[styles.card, styles.cardInteractive, { marginTop: Spacing.md }]}>
-          <Text style={[Typography.h3, styles.textPrimary]}>Interactive Card</Text>
-          <Text style={[Typography.caption, styles.textSecondary]}>Tap me — I respond to presses</Text>
+          ) : (
+            <Text style={styles.btnPrimaryText}>Continue</Text>
+          )}
         </Pressable>
-
-        <View style={[styles.card, styles.cardWithIcon, { marginTop: Spacing.md }]}>
-          <Text style={styles.cardIcon}>🌍</Text>
-          <View style={{ flex: 1 }}>
-            <Text style={[Typography.h3, styles.textPrimary]}>Card with Icon</Text>
-            <Text style={[Typography.caption, styles.textSecondary]}>Icon + title + description</Text>
-          </View>
-        </View>
-
-        {/* AVATARS */}
-        <Text style={styles.sectionLabel}>AVATARS</Text>
-        <View style={[styles.card, styles.row]}>
-          <View style={[styles.avatar, { backgroundColor: Colors.primary }]}>
-            <Text style={styles.avatarText}>J</Text>
-          </View>
-          <View style={[styles.avatar, { backgroundColor: Colors.success }]}>
-            <Text style={styles.avatarText}>M</Text>
-          </View>
-          <View style={[styles.avatar, { backgroundColor: Colors.gold }]}>
-            <Text style={styles.avatarText}>S</Text>
-          </View>
-          <View style={[styles.avatar, { backgroundColor: Colors.purple }]}>
-            <Text style={styles.avatarText}>T</Text>
-          </View>
-        </View>
-
-        {/* STATES */}
-        <Text style={styles.sectionLabel}>STATES</Text>
-
-        <View style={[styles.card, styles.emptyState]}>
-          <Text style={styles.emptyIcon}>📭</Text>
-          <Text style={[Typography.h3, styles.textPrimary]}>Empty State</Text>
-          <Text style={[Typography.caption, styles.textSecondary]}>Nothing here yet</Text>
-        </View>
-
-        <View style={[styles.card, styles.loadingState, { marginTop: Spacing.md }]}>
-          <ActivityIndicator color={Colors.primary} size="large" />
-          <Text style={[Typography.caption, styles.textSecondary, { marginTop: Spacing.md }]}>
-            Loading...
-          </Text>
-        </View>
-
-        <View style={[styles.card, styles.errorState, { marginTop: Spacing.md }]}>
-          <Text style={styles.errorIcon}>⚠️</Text>
-          <Text style={[Typography.h3, styles.textPrimary]}>Error State</Text>
-          <Text style={[Typography.caption, styles.textSecondary]}>Something went wrong</Text>
-        </View>
 
         <View style={{ height: Spacing.huge }} />
       </ScrollView>
@@ -384,75 +186,121 @@ export default function DesignShowcase() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.background },
-  content: { padding: Spacing.xl, paddingBottom: Spacing.huge },
-  textPrimary: { color: Colors.text },
-  textSecondary: { color: Colors.textSecondary },
-  pageTitle: {
-    ...Typography.hero,
-    color: Colors.text,
-    marginBottom: Spacing.xs,
+  container: {
+    flex: 1,
+    backgroundColor: Colors.background,
   },
-  pageSubtitle: {
-    ...Typography.caption,
-    color: Colors.textSecondary,
-    marginBottom: Spacing.xxl,
-  },
-  sectionLabel: {
-    ...Typography.label,
-    color: Colors.textSecondary,
-    marginTop: Spacing.xxl,
-    marginBottom: Spacing.md,
-  },
-  swatchGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
-  swatchItem: { width: '30%', marginBottom: Spacing.md },
-  swatch: {
-    width: '100%',
-    height: 60,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  swatchName: {
-    ...Typography.tiny,
-    color: Colors.text,
-    marginTop: Spacing.xs,
-  },
-  swatchValue: { ...Typography.tiny, color: Colors.textMuted },
-  card: {
-    backgroundColor: Colors.surface,
-    borderRadius: Radius.lg,
-    padding: Spacing.xl,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    gap: Spacing.sm,
-  },
-  cardInteractive: { borderColor: Colors.primary },
-  cardWithIcon: {
-    flexDirection: 'row',
+  center: {
+    flex: 1,
+    justifyContent: 'center',
     alignItems: 'center',
     gap: Spacing.lg,
   },
-  cardIcon: { fontSize: 36 },
-  row: { flexDirection: 'row', justifyContent: 'space-around' },
-  testCard: { borderColor: Colors.primary },
-  testSuccess: {
-    marginTop: Spacing.md,
-    padding: Spacing.md,
-    borderRadius: Radius.md,
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-    borderWidth: 1,
-    borderColor: Colors.success,
-    gap: Spacing.xs,
+  loadingText: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
   },
-  testError: {
-    marginTop: Spacing.md,
+  content: {
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.xxl,
+  },
+  header: {
+    marginBottom: Spacing.xxl,
+  },
+  title: {
+    ...Typography.h1,
+    color: Colors.text,
+    marginBottom: Spacing.sm,
+  },
+  subtitle: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+  },
+  languageList: {
+    gap: Spacing.md,
+  },
+  langCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.lg,
+    borderWidth: 2,
+    borderColor: Colors.border,
+    gap: Spacing.lg,
+  },
+  langCardSelected: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.surfaceLight,
+  },
+  langFlagWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: Radius.md,
+    backgroundColor: Colors.surfaceLight,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  langFlag: {
+    fontSize: 24,
+  },
+  langBody: {
+    flex: 1,
+  },
+  langName: {
+    ...Typography.h3,
+    color: Colors.text,
+    marginBottom: 2,
+  },
+  langNative: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+  },
+  langMeta: {
+    ...Typography.tiny,
+    color: Colors.textMuted,
+    marginTop: 4,
+  },
+  checkWrap: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  checkCircle: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: Colors.borderLight,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  checkCircleSelected: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  checkMark: {
+    color: Colors.text,
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  comingSoon: {
+    ...Typography.caption,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    marginTop: Spacing.xl,
+  },
+  errorBox: {
+    marginTop: Spacing.lg,
     padding: Spacing.md,
     borderRadius: Radius.md,
     backgroundColor: 'rgba(239, 68, 68, 0.1)',
     borderWidth: 1,
     borderColor: Colors.danger,
-    gap: Spacing.xs,
+  },
+  errorText: {
+    ...Typography.caption,
+    color: Colors.danger,
+    textAlign: 'center',
   },
   btnPrimary: {
     backgroundColor: Colors.primary,
@@ -461,85 +309,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     minHeight: 52,
+    marginTop: Spacing.xxl,
   },
-  btnPressed: { opacity: 0.8, transform: [{ scale: 0.98 }] },
-  btnPrimaryText: { ...Typography.bodyBold, color: Colors.text },
-  btnSecondary: {
-    backgroundColor: Colors.surfaceLight,
-    paddingVertical: Spacing.lg,
-    borderRadius: Radius.md,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: Colors.borderLight,
-  },
-  btnSecondaryText: { ...Typography.bodyBold, color: Colors.text },
-  btnGhost: { paddingVertical: Spacing.lg, alignItems: 'center' },
-  btnGhostText: { ...Typography.bodyBold, color: Colors.primaryLight },
-  btnDanger: {
-    backgroundColor: Colors.danger,
-    paddingVertical: Spacing.lg,
-    borderRadius: Radius.md,
-    alignItems: 'center',
-  },
-  btnDangerText: { ...Typography.bodyBold, color: Colors.text },
   btnDisabled: {
-    backgroundColor: Colors.surfaceLight,
-    paddingVertical: Spacing.lg,
-    borderRadius: Radius.md,
-    alignItems: 'center',
-    opacity: 0.4,
+    opacity: 0.5,
   },
-  btnDisabledText: { ...Typography.bodyBold, color: Colors.textMuted },
-  btnLoading: {
-    backgroundColor: Colors.primary,
-    paddingVertical: Spacing.lg,
-    borderRadius: Radius.md,
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: Spacing.sm,
-    opacity: 0.7,
-  },
-  btnLoadingText: { ...Typography.bodyBold, color: Colors.text },
-  btnSpacer: { height: Spacing.md },
-  inputLabel: {
-    ...Typography.tiny,
-    color: Colors.textSecondary,
-    marginTop: Spacing.md,
-    marginBottom: Spacing.xs,
-  },
-  input: {
-    backgroundColor: Colors.background,
-    borderRadius: Radius.md,
-    padding: Spacing.lg,
+  btnPrimaryText: {
+    ...Typography.bodyBold,
     color: Colors.text,
-    fontSize: 16,
-    borderWidth: 1,
-    borderColor: Colors.borderLight,
   },
-  inputFocused: { borderColor: Colors.primary, borderWidth: 2 },
-  inputError: { borderColor: Colors.danger },
-  inputDisabled: {
-    backgroundColor: Colors.surfaceLight,
-    color: Colors.textMuted,
-    opacity: 0.6,
-  },
-  errorText: { ...Typography.tiny, color: Colors.danger, marginTop: Spacing.xs },
-  avatar: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarText: { ...Typography.h2, color: Colors.text },
-  emptyState: { alignItems: 'center', paddingVertical: Spacing.xxxl },
-  emptyIcon: { fontSize: 48, marginBottom: Spacing.md },
-  loadingState: { alignItems: 'center', paddingVertical: Spacing.xxxl },
-  errorState: {
-    alignItems: 'center',
-    paddingVertical: Spacing.xxxl,
-    borderColor: Colors.danger,
-  },
-  errorIcon: { fontSize: 48, marginBottom: Spacing.md },
 });

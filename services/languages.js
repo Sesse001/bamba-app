@@ -15,6 +15,7 @@ import {
   doc,
   updateDoc,
   query,
+  where,
   orderBy,
 } from 'firebase/firestore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -29,12 +30,21 @@ const CACHE_KEY = 'bamba.activeLanguageId';
 // ─────────────────────────────────────────────────────────────
 
 /**
- * Fetch all supported languages, sorted alphabetically by name.
+ * Fetch all DEMO-enabled languages, sorted alphabetically by name.
+ *
+ * Filters to docs where status === 'demo'. V1 docs (af, en, nr, nso, ss, tn,
+ * ve, xh) have no `status` field — Firestore's `==` filter excludes docs
+ * missing the field, so they're automatically excluded without touching V1 data.
+ *
  * @returns {Promise<{ ok: boolean, data?: Array, error?: string }>}
  */
 export async function getAllLanguages() {
   try {
-    const q = query(collection(db, LANG_COL), orderBy('name', 'asc'));
+    const q = query(
+      collection(db, LANG_COL),
+      where('status', '==', 'demo'),
+      orderBy('name', 'asc')
+    );
     const snap = await getDocs(q);
     const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     return { ok: true, data };

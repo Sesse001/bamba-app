@@ -35,6 +35,9 @@ const LANGUAGES = [
     nativeName: 'isiZulu',
     family: 'Nguni',
     status: 'demo',
+    isOfficial: true,
+    writingSystem: 'Latin',
+    direction: 'LTR',
     regions: ['KwaZulu-Natal', 'Gauteng'],
   },
   {
@@ -44,6 +47,9 @@ const LANGUAGES = [
     nativeName: 'Sesotho',
     family: 'Sotho-Tswana',
     status: 'demo',
+    isOfficial: true,
+    writingSystem: 'Latin',
+    direction: 'LTR',
     regions: ['Free State', 'Gauteng', 'Limpopo'],
   },
   {
@@ -53,6 +59,9 @@ const LANGUAGES = [
     nativeName: 'Xitsonga',
     family: 'Tswa-Ronga',
     status: 'demo',
+    isOfficial: true,
+    writingSystem: 'Latin',
+    direction: 'LTR',
     regions: ['Limpopo', 'Mpumalanga'],
   },
 ];
@@ -537,9 +546,9 @@ async function main() {
     console.log('\nVerify in Firebase Console:');
     console.log('  https://console.firebase.google.com/project/linguacore-45ee6/firestore/data');
     console.log('\nExpected collections:');
-    console.log('  languages/                    (3 docs)');
+    console.log('  languages/                    (3 demo docs + 8 V1 catalogued)');
     console.log('  learning_content/             (30 docs)');
-    console.log('  learning_content/*/translations  (31 docs)');
+    console.log('  learning_content/*/translations  (33 docs)');
     process.exit(0);
   } catch (error) {
     console.error('\n❌ Seed failed:', error.message || error);
