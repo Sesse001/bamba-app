@@ -3,7 +3,8 @@
 // Hardcoded config for dev. Move to .env with EXPO_PUBLIC_ prefix before public release.
 
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import { initializeAuth, getReactNativePersistence, getAuth } from 'firebase/auth';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getFirestore, doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 
 const firebaseConfig = {
@@ -18,13 +19,26 @@ const firebaseConfig = {
 // Guard against re-initialization during hot reload (Expo Fast Refresh)
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
-export const auth = getAuth(app);
+// Initialize Auth with AsyncStorage persistence on first boot.
+// On hot reload, Firebase is already initialized — just grab the instance.
+export const auth = getApps().length === 1 && getApps()[0] === app
+  ? (() => {
+      try {
+        return initializeAuth(app, {
+          persistence: getReactNativePersistence(AsyncStorage),
+        });
+      } catch {
+        // Already initialized (Fast Refresh) — fall back to getAuth
+        return getAuth(app);
+      }
+    })()
+  : getAuth(app);
+
 export const db = getFirestore(app);
 
 /**
  * Simple connection test.
  * Writes a timestamped doc to `_healthcheck/latest` and reads it back.
- * Returns { ok: true, data } on success, { ok: false, error } on failure.
  */
 export async function testConnection() {
   try {

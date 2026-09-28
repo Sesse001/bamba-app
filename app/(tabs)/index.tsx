@@ -11,14 +11,14 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, Typography, Shadows } from '../../theme';
 import { testConnection } from '../../services/firebase';
-import { signInAsGuest } from '../../services/auth';
+import { signInAsGuest, signOutUser } from '../../services/auth';
 
 export default function DesignShowcase() {
   const [email, setEmail] = useState('');
   const [pressed, setPressed] = useState(false);
 
   // Firebase connection test state
-  const [fbState, setFbState] = useState('idle'); // idle | loading | success | error
+  const [fbState, setFbState] = useState('idle');
   const [fbResult, setFbResult] = useState(null);
 
   const runFirebaseTest = async () => {
@@ -35,7 +35,7 @@ export default function DesignShowcase() {
   };
 
   // Auth test state
-  const [authState, setAuthState] = useState('idle'); // idle | loading | success | error
+  const [authState, setAuthState] = useState('idle');
   const [authResult, setAuthResult] = useState(null);
 
   const runGuestAuthTest = async () => {
@@ -52,6 +52,12 @@ export default function DesignShowcase() {
       setAuthState('error');
       setAuthResult(result.error);
     }
+  };
+
+  const handleSignOut = async () => {
+    await signOutUser();
+    setAuthState('idle');
+    setAuthResult(null);
   };
 
   const colorSwatches = [
@@ -177,6 +183,13 @@ export default function DesignShowcase() {
               </Text>
             </View>
           )}
+
+          <Pressable
+            style={[styles.btnSecondary, { marginTop: Spacing.md }]}
+            onPress={handleSignOut}
+          >
+            <Text style={styles.btnSecondaryText}>Sign Out (temp)</Text>
+          </Pressable>
         </View>
 
         {/* COLORS */}
@@ -371,20 +384,10 @@ export default function DesignShowcase() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
-  content: {
-    padding: Spacing.xl,
-    paddingBottom: Spacing.huge,
-  },
-  textPrimary: {
-    color: Colors.text,
-  },
-  textSecondary: {
-    color: Colors.textSecondary,
-  },
+  container: { flex: 1, backgroundColor: Colors.background },
+  content: { padding: Spacing.xl, paddingBottom: Spacing.huge },
+  textPrimary: { color: Colors.text },
+  textSecondary: { color: Colors.textSecondary },
   pageTitle: {
     ...Typography.hero,
     color: Colors.text,
@@ -401,15 +404,8 @@ const styles = StyleSheet.create({
     marginTop: Spacing.xxl,
     marginBottom: Spacing.md,
   },
-  swatchGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.md,
-  },
-  swatchItem: {
-    width: '30%',
-    marginBottom: Spacing.md,
-  },
+  swatchGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.md },
+  swatchItem: { width: '30%', marginBottom: Spacing.md },
   swatch: {
     width: '100%',
     height: 60,
@@ -422,10 +418,7 @@ const styles = StyleSheet.create({
     color: Colors.text,
     marginTop: Spacing.xs,
   },
-  swatchValue: {
-    ...Typography.tiny,
-    color: Colors.textMuted,
-  },
+  swatchValue: { ...Typography.tiny, color: Colors.textMuted },
   card: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -434,24 +427,15 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     gap: Spacing.sm,
   },
-  cardInteractive: {
-    borderColor: Colors.primary,
-  },
+  cardInteractive: { borderColor: Colors.primary },
   cardWithIcon: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.lg,
   },
-  cardIcon: {
-    fontSize: 36,
-  },
-  row: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-  },
-  testCard: {
-    borderColor: Colors.primary,
-  },
+  cardIcon: { fontSize: 36 },
+  row: { flexDirection: 'row', justifyContent: 'space-around' },
+  testCard: { borderColor: Colors.primary },
   testSuccess: {
     marginTop: Spacing.md,
     padding: Spacing.md,
@@ -478,14 +462,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     minHeight: 52,
   },
-  btnPressed: {
-    opacity: 0.8,
-    transform: [{ scale: 0.98 }],
-  },
-  btnPrimaryText: {
-    ...Typography.bodyBold,
-    color: Colors.text,
-  },
+  btnPressed: { opacity: 0.8, transform: [{ scale: 0.98 }] },
+  btnPrimaryText: { ...Typography.bodyBold, color: Colors.text },
   btnSecondary: {
     backgroundColor: Colors.surfaceLight,
     paddingVertical: Spacing.lg,
@@ -494,28 +472,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.borderLight,
   },
-  btnSecondaryText: {
-    ...Typography.bodyBold,
-    color: Colors.text,
-  },
-  btnGhost: {
-    paddingVertical: Spacing.lg,
-    alignItems: 'center',
-  },
-  btnGhostText: {
-    ...Typography.bodyBold,
-    color: Colors.primaryLight,
-  },
+  btnSecondaryText: { ...Typography.bodyBold, color: Colors.text },
+  btnGhost: { paddingVertical: Spacing.lg, alignItems: 'center' },
+  btnGhostText: { ...Typography.bodyBold, color: Colors.primaryLight },
   btnDanger: {
     backgroundColor: Colors.danger,
     paddingVertical: Spacing.lg,
     borderRadius: Radius.md,
     alignItems: 'center',
   },
-  btnDangerText: {
-    ...Typography.bodyBold,
-    color: Colors.text,
-  },
+  btnDangerText: { ...Typography.bodyBold, color: Colors.text },
   btnDisabled: {
     backgroundColor: Colors.surfaceLight,
     paddingVertical: Spacing.lg,
@@ -523,10 +489,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     opacity: 0.4,
   },
-  btnDisabledText: {
-    ...Typography.bodyBold,
-    color: Colors.textMuted,
-  },
+  btnDisabledText: { ...Typography.bodyBold, color: Colors.textMuted },
   btnLoading: {
     backgroundColor: Colors.primary,
     paddingVertical: Spacing.lg,
@@ -537,13 +500,8 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
     opacity: 0.7,
   },
-  btnLoadingText: {
-    ...Typography.bodyBold,
-    color: Colors.text,
-  },
-  btnSpacer: {
-    height: Spacing.md,
-  },
+  btnLoadingText: { ...Typography.bodyBold, color: Colors.text },
+  btnSpacer: { height: Spacing.md },
   inputLabel: {
     ...Typography.tiny,
     color: Colors.textSecondary,
@@ -559,23 +517,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.borderLight,
   },
-  inputFocused: {
-    borderColor: Colors.primary,
-    borderWidth: 2,
-  },
-  inputError: {
-    borderColor: Colors.danger,
-  },
+  inputFocused: { borderColor: Colors.primary, borderWidth: 2 },
+  inputError: { borderColor: Colors.danger },
   inputDisabled: {
     backgroundColor: Colors.surfaceLight,
     color: Colors.textMuted,
     opacity: 0.6,
   },
-  errorText: {
-    ...Typography.tiny,
-    color: Colors.danger,
-    marginTop: Spacing.xs,
-  },
+  errorText: { ...Typography.tiny, color: Colors.danger, marginTop: Spacing.xs },
   avatar: {
     width: 60,
     height: 60,
@@ -583,29 +532,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  avatarText: {
-    ...Typography.h2,
-    color: Colors.text,
-  },
-  emptyState: {
-    alignItems: 'center',
-    paddingVertical: Spacing.xxxl,
-  },
-  emptyIcon: {
-    fontSize: 48,
-    marginBottom: Spacing.md,
-  },
-  loadingState: {
-    alignItems: 'center',
-    paddingVertical: Spacing.xxxl,
-  },
+  avatarText: { ...Typography.h2, color: Colors.text },
+  emptyState: { alignItems: 'center', paddingVertical: Spacing.xxxl },
+  emptyIcon: { fontSize: 48, marginBottom: Spacing.md },
+  loadingState: { alignItems: 'center', paddingVertical: Spacing.xxxl },
   errorState: {
     alignItems: 'center',
     paddingVertical: Spacing.xxxl,
     borderColor: Colors.danger,
   },
-  errorIcon: {
-    fontSize: 48,
-    marginBottom: Spacing.md,
-  },
+  errorIcon: { fontSize: 48, marginBottom: Spacing.md },
 });
