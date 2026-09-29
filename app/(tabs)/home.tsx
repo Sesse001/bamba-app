@@ -2,7 +2,7 @@
 // Home dashboard — the hub after a language is picked.
 //
 // Shows:
-//   1. Active language header (+ Switch Language link)
+//   1. Active language header (+ My contributions · Switch links)
 //   2. Continue learning — first INCOMPLETE item
 //   3. Progress — X of Y completed
 //   4. Contribute — proper card section
@@ -114,6 +114,10 @@ export default function Home() {
     router.replace(`/(tabs)?forceSwitch=1&t=${stamp}`);
   };
 
+  const handleMyContributions = () => {
+    router.push('/(tabs)/contributions');
+  };
+
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -131,7 +135,7 @@ export default function Home() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* 1. Header with Switch Language */}
+        {/* 1. Header with My contributions + Switch */}
         <View style={styles.headerRow}>
           <View style={styles.headerLeft}>
             <Text style={styles.headerLabel}>LEARNING</Text>
@@ -148,9 +152,17 @@ export default function Home() {
             </View>
           </View>
 
-          <Pressable onPress={handleSwitchLanguage} hitSlop={12}>
-            <Text style={styles.switchLink}>Switch ▸</Text>
-          </Pressable>
+          <View style={styles.topRightLinks}>
+            <Pressable onPress={handleMyContributions} hitSlop={12}>
+              <Text style={styles.switchLink}>My contributions</Text>
+            </Pressable>
+
+            <Text style={styles.linkSeparator}>·</Text>
+
+            <Pressable onPress={handleSwitchLanguage} hitSlop={12}>
+              <Text style={styles.switchLink}>Switch ▸</Text>
+            </Pressable>
+          </View>
         </View>
 
         {/* 2. Continue learning */}
@@ -266,11 +278,13 @@ const styles = StyleSheet.create({
   loadingText: { ...Typography.caption, color: Colors.textSecondary },
   content: { paddingHorizontal: Spacing.xl, paddingVertical: Spacing.xxl },
 
+  // Header
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
     marginBottom: Spacing.xxl,
+    gap: Spacing.md,
   },
   headerLeft: { flex: 1 },
   headerLabel: {
@@ -290,12 +304,22 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     marginTop: 2,
   },
+  topRightLinks: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingTop: Spacing.xs,
+  },
   switchLink: {
     ...Typography.caption,
     color: Colors.primaryLight,
-    paddingTop: Spacing.xs,
+  },
+  linkSeparator: {
+    ...Typography.caption,
+    color: Colors.textMuted,
   },
 
+  // Section label
   sectionLabel: {
     ...Typography.label,
     color: Colors.textSecondary,
@@ -303,6 +327,7 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.md,
   },
 
+  // Continue card
   continueCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -338,6 +363,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
 
+  // Complete card
   completeCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -358,6 +384,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 
+  // Empty
   emptyCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -368,6 +395,7 @@ const styles = StyleSheet.create({
   },
   emptyText: { ...Typography.caption, color: Colors.textSecondary },
 
+  // Progress
   progressCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -402,6 +430,7 @@ const styles = StyleSheet.create({
   },
   progressDetail: { ...Typography.tiny, color: Colors.textMuted },
 
+  // Contribute
   contributeCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -421,6 +450,7 @@ const styles = StyleSheet.create({
   },
   contributeText: { ...Typography.caption, color: Colors.textSecondary },
 
+  // Error
   errorBox: {
     marginTop: Spacing.lg,
     padding: Spacing.md,

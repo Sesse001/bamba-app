@@ -202,3 +202,85 @@ export async function getUserContributionCount(uid) {
     return { ok: false, error: error.message || String(error) };
   }
 }
+
+// ─────────────────────────────────────────────────────────────
+// ENRICHED READS
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Fetch all contributions by a user, enriched with the parent content's prompt.
+ *
+ * For each contribution:
+ *   - loads the contribution row
+ *   - loads the learning_content doc it points to
+ *   - returns a merged object: { ...contribution, contentPrompt, contentLanguageId }
+ *
+ * If the parent content has been deleted, contentPrompt will be null.
+ * We don't drop the row — the contribution history should remain intact.
+ *
+ * Used by the "My Contributions" screen (M5-2).
+ *
+ * @param {string} uid
+ * @param {object} [options]
+ * @param {number} [options.maxItems]   default 50
+ * @returns {Promise<{ ok: boolean, data?: Array, error?: string }>}
+ */
+export async function getMyContributionsWithContent(uid, options = {}) {
+  try {
+    if (!uid) {
+      return { ok: false, error: 'Missing uid' };
+    }
+
+    const { maxItems = 50 } = options;
+
+    // 1. Fetch raw contributions
+    const q = query(
+      collection(db, COL),
+      where('userId', '==', uid),
+      orderBy('createdAt', 'desc'),
+      limit(maxItems)
+    );
+    const snap = await getDocs(q);
+    const contributions = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    if (contributions.length === 0) {
+      return { ok: true, data: [] };
+    }
+
+    // 2. Gather unique contentIds so we don't fetch the same parent twice
+    const uniqueContentIds = [
+      ...new Set(contributions.map((c) => c.contentId).filter(Boolean)),
+    ];
+
+    // 3. Fetch each parent learning_content doc in parallel
+    const contentMap = {};
+    await Promise.all(
+      uniqueContentIds.map(async (contentId) => {
+        try {
+          const ref = doc(db, 'learning_content', contentId);
+          const contentSnap = await getDoc(ref);
+          if (contentSnap.exists()) {
+            contentMap[contentId] = contentSnap.data();
+          }
+        } catch {
+          // Ignore individual fetch errors — the contribution stays in the list
+        }
+      })
+    );
+
+    // 4. Merge
+    const enriched = contributions.map((c) => {
+      const parent = contentMap[c.contentId] || null;
+      return {
+        ...c,
+        contentPrompt: parent?.prompt || null,
+        contentLanguageId: parent?.languageId || c.languageId || null,
+        contentType: parent?.type || null,
+      };
+    });
+
+    return { ok: true, data: enriched };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+}
