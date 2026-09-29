@@ -1,12 +1,10 @@
 // app/(tabs)/index.tsx
-// Language picker — first screen after sign-in.
-// User taps a language to select, then taps Continue to commit.
+// Language picker — shown when no active language, OR when user explicitly
+// taps "Switch ▸" on Home (?forceSwitch=1).
 //
-// Selection is written to:
-//   - AsyncStorage (instant cache)
-//   - Firestore users/{uid}.activeLanguageId (source of truth)
+// State is reset on every focus so we never get stuck mid-save.
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -16,48 +14,116 @@ import {
   ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { Colors, Spacing, Radius, Typography } from '../../theme';
-import { getAllLanguages, setActiveLanguageId } from '../../services/languages';
+import {
+  getAllLanguages,
+  setActiveLanguageId,
+  getActiveLanguageId,
+} from '../../services/languages';
 import { getCurrentUser } from '../../services/auth';
 
 export default function LanguagePicker() {
   const router = useRouter();
+  const params = useLocalSearchParams();
+  const forceSwitch = params.forceSwitch === '1';
 
-  const [loading, setLoading] = useState(true);
+  const [checking, setChecking] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [languages, setLanguages] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
-  // Fetch languages on mount
+  // ─────────────────────────────────────────────
+  // RESET ON FOCUS
+  // Every time the picker mounts OR comes into focus, reset all flags.
+  // This guarantees we never re-enter with a stuck "saving" state.
+  // ─────────────────────────────────────────────
+  useFocusEffect(
+    useCallback(() => {
+      setSaving(false);
+      setError(null);
+    }, [])
+  );
+
+  // ─────────────────────────────────────────────
+  // INITIAL CHECK
+  // ─────────────────────────────────────────────
   useEffect(() => {
     let mounted = true;
 
     (async () => {
+      const user = getCurrentUser();
+      if (!user) {
+        if (mounted) setChecking(false);
+        return;
+      }
+
+      const activeRes = await getActiveLanguageId(user.uid);
+      if (!mounted) return;
+
+      // Only auto-redirect if user did NOT explicitly ask to switch
+      if (!forceSwitch && activeRes.ok && activeRes.languageId) {
+        router.replace('/(tabs)/home');
+        return;
+      }
+
+      if (mounted) setChecking(false);
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, [router, forceSwitch]);
+
+  // ─────────────────────────────────────────────
+  // LOAD LANGUAGES
+  // ─────────────────────────────────────────────
+  useEffect(() => {
+    if (checking) return;
+    let mounted = true;
+
+    (async () => {
+      setLoading(true);
       const result = await getAllLanguages();
       if (!mounted) return;
 
       if (result.ok) {
         setLanguages(result.data);
-        // Pre-select the first language
-        if (result.data.length > 0) {
+
+        // Pre-select the currently active language when switching
+        if (forceSwitch) {
+          const user = getCurrentUser();
+          if (user) {
+            const activeRes = await getActiveLanguageId(user.uid);
+            if (!mounted) return;
+            if (activeRes.ok && activeRes.languageId) {
+              setSelectedId(activeRes.languageId);
+            } else if (result.data.length > 0) {
+              setSelectedId(result.data[0].id);
+            }
+          }
+        } else if (result.data.length > 0) {
           setSelectedId(result.data[0].id);
         }
         setError(null);
       } else {
         setError(result.error);
       }
-      setLoading(false);
+      if (mounted) setLoading(false);
     })();
 
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [checking, forceSwitch]);
 
+  // ─────────────────────────────────────────────
+  // SUBMIT
+  // ─────────────────────────────────────────────
   const handleContinue = async () => {
-    if (!selectedId) return;
+    if (!selectedId || saving) return;
 
     setSaving(true);
     setError(null);
@@ -72,12 +138,26 @@ export default function LanguagePicker() {
     const result = await setActiveLanguageId(user.uid, selectedId);
 
     if (result.ok) {
-      router.replace('/(tabs)/home');
+      // Reset saving BEFORE navigating, so if we come back here
+      // via Switch again, the button isn't stuck.
+      setSaving(false);
+      const stamp = Date.now();
+      router.replace(`/(tabs)/home?t=${stamp}`);
     } else {
       setError(result.error);
       setSaving(false);
     }
   };
+
+  if (checking) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.center}>
+          <ActivityIndicator color={Colors.primary} size="large" />
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   if (loading) {
     return (
@@ -98,9 +178,13 @@ export default function LanguagePicker() {
       >
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.title}>Choose a language</Text>
+          <Text style={styles.title}>
+            {forceSwitch ? 'Switch language' : 'Choose a language'}
+          </Text>
           <Text style={styles.subtitle}>
-            Start with one — you can add more later.
+            {forceSwitch
+              ? 'Pick a different language to focus on.'
+              : 'Start with one — you can switch anytime.'}
           </Text>
         </View>
 
@@ -120,7 +204,7 @@ export default function LanguagePicker() {
                   styles.langCard,
                   isSelected && styles.langCardSelected,
                 ]}
-                onPress={() => setSelectedId(lang.id)}
+                onPress={() => !saving && setSelectedId(lang.id)}
                 disabled={saving}
               >
                 <View style={styles.langFlagWrap}>
@@ -150,19 +234,16 @@ export default function LanguagePicker() {
           })}
         </View>
 
-        {/* Catalogue note — real product state, not placeholder */}
         <Text style={styles.comingSoon}>
           8 more South African languages catalogued — coming soon.
         </Text>
 
-        {/* Error */}
         {error && (
           <View style={styles.errorBox}>
             <Text style={styles.errorText}>{String(error)}</Text>
           </View>
         )}
 
-        {/* Continue */}
         <Pressable
           style={[
             styles.btnPrimary,
@@ -174,7 +255,9 @@ export default function LanguagePicker() {
           {saving ? (
             <ActivityIndicator color={Colors.text} size="small" />
           ) : (
-            <Text style={styles.btnPrimaryText}>Continue</Text>
+            <Text style={styles.btnPrimaryText}>
+              {forceSwitch ? 'Switch' : 'Continue'}
+            </Text>
           )}
         </Pressable>
 
@@ -185,39 +268,23 @@ export default function LanguagePicker() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
+  container: { flex: 1, backgroundColor: Colors.background },
   center: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     gap: Spacing.lg,
   },
-  loadingText: {
-    ...Typography.caption,
-    color: Colors.textSecondary,
-  },
-  content: {
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.xxl,
-  },
-  header: {
-    marginBottom: Spacing.xxl,
-  },
+  loadingText: { ...Typography.caption, color: Colors.textSecondary },
+  content: { paddingHorizontal: Spacing.xl, paddingVertical: Spacing.xxl },
+  header: { marginBottom: Spacing.xxl },
   title: {
     ...Typography.h1,
     color: Colors.text,
     marginBottom: Spacing.sm,
   },
-  subtitle: {
-    ...Typography.body,
-    color: Colors.textSecondary,
-  },
-  languageList: {
-    gap: Spacing.md,
-  },
+  subtitle: { ...Typography.body, color: Colors.textSecondary },
+  languageList: { gap: Spacing.md },
   langCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -240,30 +307,20 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  langFlag: {
-    fontSize: 24,
-  },
-  langBody: {
-    flex: 1,
-  },
+  langFlag: { fontSize: 24 },
+  langBody: { flex: 1 },
   langName: {
     ...Typography.h3,
     color: Colors.text,
     marginBottom: 2,
   },
-  langNative: {
-    ...Typography.caption,
-    color: Colors.textSecondary,
-  },
+  langNative: { ...Typography.caption, color: Colors.textSecondary },
   langMeta: {
     ...Typography.tiny,
     color: Colors.textMuted,
     marginTop: 4,
   },
-  checkWrap: {
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
+  checkWrap: { justifyContent: 'center', alignItems: 'center' },
   checkCircle: {
     width: 24,
     height: 24,
@@ -277,11 +334,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary,
     borderColor: Colors.primary,
   },
-  checkMark: {
-    color: Colors.text,
-    fontSize: 14,
-    fontWeight: 'bold',
-  },
+  checkMark: { color: Colors.text, fontSize: 14, fontWeight: 'bold' },
   comingSoon: {
     ...Typography.caption,
     color: Colors.textMuted,
@@ -310,11 +363,6 @@ const styles = StyleSheet.create({
     minHeight: 52,
     marginTop: Spacing.xxl,
   },
-  btnDisabled: {
-    opacity: 0.5,
-  },
-  btnPrimaryText: {
-    ...Typography.bodyBold,
-    color: Colors.text,
-  },
+  btnDisabled: { opacity: 0.5 },
+  btnPrimaryText: { ...Typography.bodyBold, color: Colors.text },
 });

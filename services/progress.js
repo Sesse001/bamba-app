@@ -5,12 +5,13 @@
 //   users/{uid}/progress/{contentId}
 //     seen:        boolean  — user opened the card
 //     attempts:    number   — how many times they've interacted
-//     completed:   boolean  — marked as done (e.g. revealed translations + reviewed)
+//     completed:   boolean  — marked as done (revealed + submitted or skipped)
 //     firstSeenAt: timestamp
 //     lastSeenAt:  timestamp
 //
 // contentId is the deterministic learning_content ID, e.g. "zu_greeting_hello".
-// Using contentId as the doc ID means progress is naturally unique per item.
+// Using contentId as the doc ID means progress is naturally unique per item
+// AND naturally isolated per language (since content IDs include the language code).
 
 import {
   collection,
@@ -28,21 +29,14 @@ import { db } from './firebase';
 const USERS_COL = 'users';
 const PROGRESS_SUBCOL = 'progress';
 
-/**
- * Build a ref to a user's progress subcollection.
- * @param {string} uid
- * @returns {CollectionReference}
- */
+// ─────────────────────────────────────────────────────────────
+// REFS
+// ─────────────────────────────────────────────────────────────
+
 function progressCol(uid) {
   return collection(db, USERS_COL, uid, PROGRESS_SUBCOL);
 }
 
-/**
- * Build a ref to a single progress doc.
- * @param {string} uid
- * @param {string} contentId
- * @returns {DocumentReference}
- */
 function progressDoc(uid, contentId) {
   return doc(db, USERS_COL, uid, PROGRESS_SUBCOL, contentId);
 }
@@ -53,11 +47,7 @@ function progressDoc(uid, contentId) {
 
 /**
  * Mark a content item as seen. Creates the progress doc if it doesn't exist.
- * Safe to call multiple times — idempotent.
- *
- * @param {string} uid
- * @param {string} contentId
- * @returns {Promise<{ ok: boolean, error?: string }>}
+ * Idempotent — safe to call repeatedly.
  */
 export async function markSeen(uid, contentId) {
   try {
@@ -69,7 +59,6 @@ export async function markSeen(uid, contentId) {
     const snap = await getDoc(ref);
 
     if (!snap.exists()) {
-      // First time seen — create the doc
       await setDoc(ref, {
         contentId,
         seen: true,
@@ -79,7 +68,6 @@ export async function markSeen(uid, contentId) {
         lastSeenAt: serverTimestamp(),
       });
     } else {
-      // Already exists — just bump lastSeenAt
       await updateDoc(ref, {
         seen: true,
         lastSeenAt: serverTimestamp(),
@@ -93,12 +81,7 @@ export async function markSeen(uid, contentId) {
 }
 
 /**
- * Increment the attempts counter and update lastSeenAt.
- * Call when the user interacts (e.g. taps "Reveal" or submits an expression).
- *
- * @param {string} uid
- * @param {string} contentId
- * @returns {Promise<{ ok: boolean, error?: string }>}
+ * Increment attempts counter and update lastSeenAt.
  */
 export async function markAttempt(uid, contentId) {
   try {
@@ -110,7 +93,6 @@ export async function markAttempt(uid, contentId) {
     const snap = await getDoc(ref);
 
     if (!snap.exists()) {
-      // Create with attempts = 1
       await setDoc(ref, {
         contentId,
         seen: true,
@@ -136,11 +118,6 @@ export async function markAttempt(uid, contentId) {
 
 /**
  * Mark a content item as completed.
- * Called after the user has seen the translations and (optionally) submitted their own.
- *
- * @param {string} uid
- * @param {string} contentId
- * @returns {Promise<{ ok: boolean, error?: string }>}
  */
 export async function markCompleted(uid, contentId) {
   try {
@@ -179,10 +156,6 @@ export async function markCompleted(uid, contentId) {
 
 /**
  * Get progress for a single content item.
- *
- * @param {string} uid
- * @param {string} contentId
- * @returns {Promise<{ ok: boolean, data?: object | null, error?: string }>}
  */
 export async function getProgress(uid, contentId) {
   try {
@@ -204,12 +177,8 @@ export async function getProgress(uid, contentId) {
 }
 
 /**
- * Get all progress docs for a user.
- * Returns an object keyed by contentId for fast lookup:
- *   { "zu_greeting_hello": { seen: true, completed: true, ... }, ... }
- *
- * @param {string} uid
- * @returns {Promise<{ ok: boolean, data?: object, error?: string }>}
+ * Get all progress docs for a user, keyed by contentId.
+ * Returns: { "zu_greeting_hello": {...}, ... }
  */
 export async function getAllProgress(uid) {
   try {
@@ -232,12 +201,12 @@ export async function getAllProgress(uid) {
 }
 
 /**
- * Get summary counts for a set of content IDs.
- * Useful for "X of 10" progress display.
+ * Summary counts for a set of content IDs.
+ * Returns both aggregate counts AND the raw map so callers can find specific items.
  *
  * @param {string} uid
  * @param {string[]} contentIds — the content in the current lesson/set
- * @returns {Promise<{ ok: boolean, data?: { seen: number, completed: number, total: number }, error?: string }>}
+ * @returns {Promise<{ ok: boolean, data?: { seen, completed, total, byContentId }, error?: string }>}
  */
 export async function getProgressSummary(uid, contentIds) {
   try {
@@ -251,16 +220,58 @@ export async function getProgressSummary(uid, contentIds) {
     let seen = 0;
     let completed = 0;
 
+    // Only include progress entries for the content IDs in question
+    const byContentId = {};
+
     for (const id of contentIds) {
-      const p = all.data[id];
-      if (p?.seen) seen++;
-      if (p?.completed) completed++;
+      const p = all.data[id] || null;
+      if (p) {
+        byContentId[id] = p;
+        if (p.seen) seen++;
+        if (p.completed) completed++;
+      }
     }
 
     return {
       ok: true,
-      data: { seen, completed, total: contentIds.length },
+      data: { seen, completed, total: contentIds.length, byContentId },
     };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+}
+
+/**
+ * Given a list of content IDs, return the first one that is NOT completed.
+ * Returns null if all are completed.
+ *
+ * Used by Home to pick the "Continue learning" card.
+ *
+ * @param {string} uid
+ * @param {Array<{id: string, order?: number}>} items — full content list (ordered)
+ * @returns {Promise<{ ok: boolean, next?: object | null, error?: string }>}
+ */
+export async function getNextIncompleteItem(uid, items) {
+  try {
+    if (!uid || !Array.isArray(items)) {
+      return { ok: false, error: 'Missing uid or items' };
+    }
+    if (items.length === 0) {
+      return { ok: true, next: null };
+    }
+
+    const all = await getAllProgress(uid);
+    if (!all.ok) return all;
+
+    for (const item of items) {
+      const p = all.data[item.id];
+      if (!p || !p.completed) {
+        return { ok: true, next: item };
+      }
+    }
+
+    // All completed
+    return { ok: true, next: null };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
   }

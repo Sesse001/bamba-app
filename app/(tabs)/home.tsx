@@ -1,18 +1,14 @@
 // app/(tabs)/home.tsx
-// Home dashboard — the "hub" after a language is picked.
+// Home dashboard — the hub after a language is picked.
 //
-// Layout (per ChatGPT's direction):
-//   1. Active language header
-//   2. Continue learning — one next card
-//   3. Progress — "X of 10"
+// Shows:
+//   1. Active language header (+ Switch Language link)
+//   2. Continue learning — first INCOMPLETE item
+//   3. Progress — X of Y completed
 //   4. Contribute — proper card section
 //
-// Data flow:
-//   - reads activeLanguageId (cache + Firestore)
-//   - fetches the language doc
-//   - fetches first 10 content items for that language
-//   - fetches progress summary for those items
-//   - "Continue" routes to learn.tsx (M4 File 4)
+// Progress is naturally isolated per language because content IDs
+// include the language code (zu_greeting_hello vs st_greeting_hello).
 
 import { useState, useEffect, useCallback } from 'react';
 import {
@@ -28,7 +24,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { Colors, Spacing, Radius, Typography } from '../../theme';
 import { getActiveLanguageId, getLanguage } from '../../services/languages';
 import { getDemoLesson } from '../../services/content';
-import { getProgressSummary } from '../../services/progress';
+import { getProgressSummary, getNextIncompleteItem } from '../../services/progress';
 import { getCurrentUser } from '../../services/auth';
 
 export default function Home() {
@@ -37,6 +33,7 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [language, setLanguage] = useState(null);
   const [nextItem, setNextItem] = useState(null);
+  const [allComplete, setAllComplete] = useState(false);
   const [progress, setProgress] = useState({ seen: 0, completed: 0, total: 0 });
   const [error, setError] = useState(null);
 
@@ -53,7 +50,6 @@ export default function Home() {
     // 1. Active language
     const activeRes = await getActiveLanguageId(user.uid);
     if (!activeRes.ok || !activeRes.languageId) {
-      // No active language — send back to picker
       router.replace('/(tabs)');
       return;
     }
@@ -77,25 +73,23 @@ export default function Home() {
     const items = contentRes.data || [];
     const contentIds = items.map((i) => i.id);
 
-    // 3. Progress summary for those items
+    // 3. Progress summary
     const progressRes = await getProgressSummary(user.uid, contentIds);
     if (progressRes.ok) {
       setProgress(progressRes.data);
     }
 
-    // 4. Pick the "next" item — the first not-completed one
-    let next = items[0] || null;
-    if (progressRes.ok && items.length > 0) {
-      const completedSet = new Set();
-      // We don't have per-item data here yet, so we use a simpler heuristic:
-      // if completed count equals total, there is no "next".
-      if (progressRes.data.completed < items.length) {
-        // Find first item not marked completed by fetching each one later.
-        // For M4 simplicity, just pick the first one — M5 will refine.
-        next = items[0];
+    // 4. First incomplete item — the "Continue learning" card
+    const nextRes = await getNextIncompleteItem(user.uid, items);
+    if (nextRes.ok) {
+      if (nextRes.next) {
+        setNextItem(nextRes.next);
+        setAllComplete(false);
+      } else {
+        setNextItem(null);
+        setAllComplete(true);
       }
     }
-    setNextItem(next);
 
     setLoading(false);
   }, [router]);
@@ -105,12 +99,20 @@ export default function Home() {
     load();
   }, [load]);
 
-  // Reload when screen comes back into focus (e.g. after returning from Learn)
+  // Reload when screen comes back into focus (e.g. returning from Learn)
   useFocusEffect(
     useCallback(() => {
       load();
     }, [load])
   );
+
+  const handleSwitchLanguage = () => {
+    // Use a timestamp so every tap generates a fresh route.
+    // Without this, Expo Router treats repeated "?forceSwitch=1" as the same
+    // route and skips navigation after the first switch.
+    const stamp = Date.now();
+    router.replace(`/(tabs)?forceSwitch=1&t=${stamp}`);
+  };
 
   if (loading) {
     return (
@@ -129,28 +131,40 @@ export default function Home() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* 1. Active language header */}
-        <View style={styles.header}>
-          <Text style={styles.headerLabel}>LEARNING</Text>
-          <View style={styles.langRow}>
-            <Text style={styles.langFlag}>🇿🇦</Text>
-            <View>
-              <Text style={styles.langName}>{language?.name}</Text>
-              <Text style={styles.langMeta}>
-                {[language?.family, language?.regions?.join(', ')]
-                  .filter(Boolean)
-                  .join(' · ')}
-              </Text>
+        {/* 1. Header with Switch Language */}
+        <View style={styles.headerRow}>
+          <View style={styles.headerLeft}>
+            <Text style={styles.headerLabel}>LEARNING</Text>
+            <View style={styles.langRow}>
+              <Text style={styles.langFlag}>🇿🇦</Text>
+              <View>
+                <Text style={styles.langName}>{language?.name}</Text>
+                <Text style={styles.langMeta}>
+                  {[language?.family, language?.regions?.join(', ')]
+                    .filter(Boolean)
+                    .join(' · ')}
+                </Text>
+              </View>
             </View>
           </View>
+
+          <Pressable onPress={handleSwitchLanguage} hitSlop={12}>
+            <Text style={styles.switchLink}>Switch ▸</Text>
+          </Pressable>
         </View>
 
         {/* 2. Continue learning */}
         <Text style={styles.sectionLabel}>CONTINUE LEARNING</Text>
+
         {nextItem ? (
           <Pressable
             style={styles.continueCard}
-            onPress={() => router.push('/(tabs)/learn')}
+            onPress={() =>
+              router.push({
+                pathname: '/(tabs)/learn',
+                params: { contentId: nextItem.id },
+              })
+            }
           >
             <View style={styles.continueBody}>
               <Text style={styles.continuePrompt}>{nextItem.prompt}</Text>
@@ -162,6 +176,14 @@ export default function Home() {
               <Text style={styles.continueArrowText}>→</Text>
             </View>
           </Pressable>
+        ) : allComplete ? (
+          <View style={styles.completeCard}>
+            <Text style={styles.completeEmoji}>🎉</Text>
+            <Text style={styles.completeTitle}>Lesson complete!</Text>
+            <Text style={styles.completeText}>
+              You've finished all {progress.total} items in this set.
+            </Text>
+          </View>
         ) : (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyText}>No lesson content available yet.</Text>
@@ -200,7 +222,14 @@ export default function Home() {
         <Text style={styles.sectionLabel}>CONTRIBUTE</Text>
         <Pressable
           style={styles.contributeCard}
-          onPress={() => router.push('/(tabs)/learn')}
+          onPress={() => {
+            if (nextItem) {
+              router.push({
+                pathname: '/(tabs)/learn',
+                params: { contentId: nextItem.id },
+              });
+            }
+          }}
         >
           <Text style={styles.contributeIcon}>🌍</Text>
           <View style={styles.contributeBody}>
@@ -227,29 +256,23 @@ export default function Home() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
+  container: { flex: 1, backgroundColor: Colors.background },
   center: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     gap: Spacing.lg,
   },
-  loadingText: {
-    ...Typography.caption,
-    color: Colors.textSecondary,
-  },
-  content: {
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.xxl,
-  },
+  loadingText: { ...Typography.caption, color: Colors.textSecondary },
+  content: { paddingHorizontal: Spacing.xl, paddingVertical: Spacing.xxl },
 
-  // Header
-  header: {
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
     marginBottom: Spacing.xxl,
   },
+  headerLeft: { flex: 1 },
   headerLabel: {
     ...Typography.label,
     color: Colors.textMuted,
@@ -260,20 +283,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.lg,
   },
-  langFlag: {
-    fontSize: 40,
-  },
-  langName: {
-    ...Typography.h1,
-    color: Colors.text,
-  },
+  langFlag: { fontSize: 40 },
+  langName: { ...Typography.h1, color: Colors.text },
   langMeta: {
     ...Typography.caption,
     color: Colors.textSecondary,
     marginTop: 2,
   },
+  switchLink: {
+    ...Typography.caption,
+    color: Colors.primaryLight,
+    paddingTop: Spacing.xs,
+  },
 
-  // Sections
   sectionLabel: {
     ...Typography.label,
     color: Colors.textSecondary,
@@ -281,7 +303,6 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.md,
   },
 
-  // Continue card
   continueCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -292,9 +313,7 @@ const styles = StyleSheet.create({
     borderColor: Colors.primary,
     gap: Spacing.lg,
   },
-  continueBody: {
-    flex: 1,
-  },
+  continueBody: { flex: 1 },
   continuePrompt: {
     ...Typography.h2,
     color: Colors.text,
@@ -318,6 +337,27 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: 'bold',
   },
+
+  completeCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.xl,
+    borderWidth: 2,
+    borderColor: Colors.success,
+    alignItems: 'center',
+  },
+  completeEmoji: { fontSize: 48, marginBottom: Spacing.md },
+  completeTitle: {
+    ...Typography.h2,
+    color: Colors.text,
+    marginBottom: Spacing.xs,
+  },
+  completeText: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+  },
+
   emptyCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -326,12 +366,8 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     alignItems: 'center',
   },
-  emptyText: {
-    ...Typography.caption,
-    color: Colors.textSecondary,
-  },
+  emptyText: { ...Typography.caption, color: Colors.textSecondary },
 
-  // Progress card
   progressCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -345,19 +381,13 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: Spacing.md,
   },
-  progressNumber: {
-    ...Typography.numberMedium,
-    color: Colors.text,
-  },
+  progressNumber: { ...Typography.numberMedium, color: Colors.text },
   progressOf: {
     ...Typography.body,
     color: Colors.textSecondary,
     fontWeight: '400',
   },
-  progressLabel: {
-    ...Typography.caption,
-    color: Colors.textSecondary,
-  },
+  progressLabel: { ...Typography.caption, color: Colors.textSecondary },
   progressBarWrap: {
     height: 8,
     borderRadius: 4,
@@ -370,12 +400,8 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary,
     borderRadius: 4,
   },
-  progressDetail: {
-    ...Typography.tiny,
-    color: Colors.textMuted,
-  },
+  progressDetail: { ...Typography.tiny, color: Colors.textMuted },
 
-  // Contribute card
   contributeCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -386,23 +412,15 @@ const styles = StyleSheet.create({
     borderColor: Colors.gold,
     gap: Spacing.lg,
   },
-  contributeIcon: {
-    fontSize: 36,
-  },
-  contributeBody: {
-    flex: 1,
-  },
+  contributeIcon: { fontSize: 36 },
+  contributeBody: { flex: 1 },
   contributeTitle: {
     ...Typography.h3,
     color: Colors.text,
     marginBottom: 4,
   },
-  contributeText: {
-    ...Typography.caption,
-    color: Colors.textSecondary,
-  },
+  contributeText: { ...Typography.caption, color: Colors.textSecondary },
 
-  // Error
   errorBox: {
     marginTop: Spacing.lg,
     padding: Spacing.md,

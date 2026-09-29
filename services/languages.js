@@ -1,12 +1,9 @@
 // services/languages.js
 // Read layer for supported languages + active-language selection.
 //
-// Languages themselves are seeded via scripts/seed.js.
-// This file only reads them and manages which one the current user has active.
-//
-// Active language persistence:
-//   - AsyncStorage: cache for instant startup
-//   - Firestore:   source of truth for cross-device sync (users/{uid}.activeLanguageId)
+// Caching strategy:
+//   - Language list: cached in AsyncStorage for 1 hour
+//   - Active language ID: cached in AsyncStorage forever, backed by Firestore
 
 import {
   collection,
@@ -23,23 +20,44 @@ import { db } from './firebase';
 
 const LANG_COL = 'languages';
 const USERS_COL = 'users';
-const CACHE_KEY = 'bamba.activeLanguageId';
+const ACTIVE_KEY = 'bamba.activeLanguageId';
+const LANG_LIST_KEY = 'bamba.languagesList';
+const LANG_LIST_TTL = 60 * 60 * 1000; // 1 hour
 
 // ─────────────────────────────────────────────────────────────
-// LANGUAGE READS
+// LANGUAGE READS (with caching)
 // ─────────────────────────────────────────────────────────────
 
 /**
  * Fetch all DEMO-enabled languages, sorted alphabetically by name.
  *
- * Filters to docs where status === 'demo'. V1 docs (af, en, nr, nso, ss, tn,
- * ve, xh) have no `status` field — Firestore's `==` filter excludes docs
- * missing the field, so they're automatically excluded without touching V1 data.
+ * Strategy:
+ *   1. Check AsyncStorage cache (< 1 hour old) → instant return
+ *   2. Otherwise fetch from Firestore → cache it → return
  *
- * @returns {Promise<{ ok: boolean, data?: Array, error?: string }>}
+ * Cache is transparent — callers don't know or care.
  */
-export async function getAllLanguages() {
+export async function getAllLanguages(options = {}) {
+  const { forceRefresh = false } = options;
+
   try {
+    // 1. Try cache first
+    if (!forceRefresh) {
+      const cached = await AsyncStorage.getItem(LANG_LIST_KEY);
+      if (cached) {
+        try {
+          const parsed = JSON.parse(cached);
+          const age = Date.now() - (parsed.cachedAt || 0);
+          if (age < LANG_LIST_TTL && Array.isArray(parsed.data)) {
+            return { ok: true, data: parsed.data, source: 'cache' };
+          }
+        } catch {
+          // Corrupt cache — ignore and refetch
+        }
+      }
+    }
+
+    // 2. Fetch from Firestore
     const q = query(
       collection(db, LANG_COL),
       where('status', '==', 'demo'),
@@ -47,26 +65,69 @@ export async function getAllLanguages() {
     );
     const snap = await getDocs(q);
     const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    return { ok: true, data };
+
+    // 3. Cache for next time
+    await AsyncStorage.setItem(
+      LANG_LIST_KEY,
+      JSON.stringify({ data, cachedAt: Date.now() })
+    );
+
+    return { ok: true, data, source: 'firestore' };
+  } catch (error) {
+    // If Firestore fails but we have stale cache, use it as fallback
+    try {
+      const cached = await AsyncStorage.getItem(LANG_LIST_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed.data)) {
+          return { ok: true, data: parsed.data, source: 'stale-cache' };
+        }
+      }
+    } catch {
+      // fall through to error
+    }
+    return { ok: false, error: error.message || String(error) };
+  }
+}
+
+/**
+ * Fetch a single language by ID (from cache if available, else Firestore).
+ */
+export async function getLanguage(id) {
+  try {
+    if (!id) return { ok: false, error: 'No language ID provided' };
+
+    // Prefer cache
+    const cached = await AsyncStorage.getItem(LANG_LIST_KEY);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        const found = parsed.data?.find((l) => l.id === id);
+        if (found) return { ok: true, data: found, source: 'cache' };
+      } catch {
+        // corrupt cache, fall through
+      }
+    }
+
+    // Fallback to Firestore
+    const ref = doc(db, LANG_COL, id);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) {
+      return { ok: false, error: 'Language not found' };
+    }
+    return { ok: true, data: { id: snap.id, ...snap.data() }, source: 'firestore' };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
   }
 }
 
 /**
- * Fetch a single language by ID.
- * @param {string} id
- * @returns {Promise<{ ok: boolean, data?: object, error?: string }>}
+ * Clear the language list cache (e.g. after a seed).
  */
-export async function getLanguage(id) {
+export async function clearLanguagesCache() {
   try {
-    if (!id) return { ok: false, error: 'No language ID provided' };
-    const ref = doc(db, LANG_COL, id);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) {
-      return { ok: false, error: 'Language not found' };
-    }
-    return { ok: true, data: { id: snap.id, ...snap.data() } };
+    await AsyncStorage.removeItem(LANG_LIST_KEY);
+    return { ok: true };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
   }
@@ -78,24 +139,15 @@ export async function getLanguage(id) {
 
 /**
  * Get the current user's active language ID.
- *
- * Strategy:
- *   1. Read from AsyncStorage (instant)
- *   2. Fall back to Firestore users/{uid}.activeLanguageId (persistent)
- *   3. Return null if neither is set
- *
- * @param {string} uid
- * @returns {Promise<{ ok: boolean, languageId?: string | null, source?: 'cache' | 'firestore' | 'none', error?: string }>}
+ * Cache-first, Firestore fallback.
  */
 export async function getActiveLanguageId(uid) {
   try {
-    // 1. Cache first
-    const cached = await AsyncStorage.getItem(CACHE_KEY);
+    const cached = await AsyncStorage.getItem(ACTIVE_KEY);
     if (cached) {
       return { ok: true, languageId: cached, source: 'cache' };
     }
 
-    // 2. Fall back to Firestore
     if (!uid) {
       return { ok: true, languageId: null, source: 'none' };
     }
@@ -107,9 +159,8 @@ export async function getActiveLanguageId(uid) {
       const data = snap.data();
       const firestoreId = data.activeLanguageId || null;
 
-      // Warm the cache for next boot
       if (firestoreId) {
-        await AsyncStorage.setItem(CACHE_KEY, firestoreId);
+        await AsyncStorage.setItem(ACTIVE_KEY, firestoreId);
       }
 
       return { ok: true, languageId: firestoreId, source: 'firestore' };
@@ -123,21 +174,15 @@ export async function getActiveLanguageId(uid) {
 
 /**
  * Set the current user's active language.
- * Writes to AsyncStorage immediately (fast UI), then Firestore (persistent).
- *
- * @param {string} uid
- * @param {string} languageId
- * @returns {Promise<{ ok: boolean, error?: string }>}
+ * Writes AsyncStorage first (instant), then Firestore.
  */
 export async function setActiveLanguageId(uid, languageId) {
   try {
     if (!uid) return { ok: false, error: 'No user ID provided' };
     if (!languageId) return { ok: false, error: 'No language ID provided' };
 
-    // 1. Cache first — instant for the UI
-    await AsyncStorage.setItem(CACHE_KEY, languageId);
+    await AsyncStorage.setItem(ACTIVE_KEY, languageId);
 
-    // 2. Persist to Firestore — source of truth
     const ref = doc(db, USERS_COL, uid);
     await updateDoc(ref, {
       activeLanguageId: languageId,
@@ -151,11 +196,10 @@ export async function setActiveLanguageId(uid, languageId) {
 
 /**
  * Clear the cached active language (e.g. on sign-out).
- * Firestore value is NOT cleared — it's the persistent preference.
  */
 export async function clearActiveLanguageCache() {
   try {
-    await AsyncStorage.removeItem(CACHE_KEY);
+    await AsyncStorage.removeItem(ACTIVE_KEY);
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
