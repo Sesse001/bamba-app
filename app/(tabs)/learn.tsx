@@ -14,6 +14,11 @@
 //   - markAttempt on reveal
 //   - markCompleted on "Next"
 //   - contribution submit writes to contributions/ collection
+//
+// Content honesty:
+//   Each seeded translation shows a [DEMO] badge — it's prototype content,
+//   not yet verified by a native speaker. When a translation is later
+//   reviewed, the badge will flip to [VERIFIED] (M5+ work).
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -22,15 +27,18 @@ import {
   Pressable,
   StyleSheet,
   ActivityIndicator,
-  ScrollView,
-  TextInput,
   Keyboard,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import { Colors, Spacing, Radius, Typography } from '../../theme';
-import { getContentItem, getTranslationsForContent, getDemoLesson } from '../../services/content';
+import {
+  getContentItem,
+  getTranslationsForContent,
+  getDemoLesson,
+} from '../../services/content';
 import {
   markSeen,
   markAttempt,
@@ -39,6 +47,17 @@ import {
 } from '../../services/progress';
 import { submitContribution } from '../../services/contributions';
 import { getCurrentUser } from '../../services/auth';
+
+// Status → badge label mapping
+// Later: extend with 'community_supported', 'verified', etc.
+const STATUS_BADGES = {
+  reviewed: { label: 'DEMO', color: Colors.primaryLight },
+  community_supported: { label: 'DEMO', color: Colors.primaryLight },
+  pending: { label: 'DEMO', color: Colors.primaryLight },
+  regional_variant: { label: 'DEMO', color: Colors.primaryLight },
+  flagged: { label: 'DEMO', color: Colors.primaryLight },
+};
+const DEFAULT_BADGE = { label: 'DEMO', color: Colors.primaryLight };
 
 export default function Learn() {
   const router = useRouter();
@@ -65,47 +84,44 @@ export default function Learn() {
   // LOAD
   // ─────────────────────────────────────────────
 
-  const loadItem = useCallback(
-    async (contentId) => {
-      setLoading(true);
-      setError(null);
-      setRevealed(false);
-      setShowContribute(false);
-      setContribText('');
-      setContribNote('');
-      setSubmitted(false);
-      markedSeenRef.current = false;
+  const loadItem = useCallback(async (contentId) => {
+    setLoading(true);
+    setError(null);
+    setRevealed(false);
+    setShowContribute(false);
+    setContribText('');
+    setContribNote('');
+    setSubmitted(false);
+    markedSeenRef.current = false;
 
-      if (!contentId) {
-        setError('No content to show');
-        setLoading(false);
-        return;
-      }
-
-      const contentRes = await getContentItem(contentId);
-      if (!contentRes.ok) {
-        setError(contentRes.error);
-        setLoading(false);
-        return;
-      }
-      setContent(contentRes.data);
-
-      const transRes = await getTranslationsForContent(contentId);
-      if (transRes.ok) {
-        setTranslations(transRes.data || []);
-      }
-
-      // Mark as seen (once per card)
-      const user = getCurrentUser();
-      if (user && !markedSeenRef.current) {
-        markedSeenRef.current = true;
-        await markSeen(user.uid, contentId);
-      }
-
+    if (!contentId) {
+      setError('No content to show');
       setLoading(false);
-    },
-    []
-  );
+      return;
+    }
+
+    const contentRes = await getContentItem(contentId);
+    if (!contentRes.ok) {
+      setError(contentRes.error);
+      setLoading(false);
+      return;
+    }
+    setContent(contentRes.data);
+
+    const transRes = await getTranslationsForContent(contentId);
+    if (transRes.ok) {
+      setTranslations(transRes.data || []);
+    }
+
+    // Mark as seen (once per card)
+    const user = getCurrentUser();
+    if (user && !markedSeenRef.current) {
+      markedSeenRef.current = true;
+      await markSeen(user.uid, contentId);
+    }
+
+    setLoading(false);
+  }, []);
 
   useEffect(() => {
     loadItem(initialContentId);
@@ -162,10 +178,8 @@ export default function Learn() {
     const user = getCurrentUser();
     if (!user || !content) return;
 
-    // Mark this item as completed
     await markCompleted(user.uid, content.id);
 
-    // Find next incomplete item in the same language
     const lessonRes = await getDemoLesson(content.languageId, 10);
     if (!lessonRes.ok) {
       router.replace('/(tabs)/home');
@@ -175,10 +189,8 @@ export default function Learn() {
     const nextRes = await getNextIncompleteItem(user.uid, lessonRes.data);
 
     if (nextRes.ok && nextRes.next && nextRes.next.id !== content.id) {
-      // Load the next item in place
       loadItem(nextRes.next.id);
     } else {
-      // All done — back to Home
       router.replace('/(tabs)/home');
     }
   };
@@ -232,7 +244,9 @@ export default function Learn() {
 
         {/* Prompt */}
         <View style={styles.promptBlock}>
-          <Text style={styles.promptLabel}>TRANSLATE TO {content?.languageId?.toUpperCase()}</Text>
+          <Text style={styles.promptLabel}>
+            TRANSLATE TO {content?.languageId?.toUpperCase()}
+          </Text>
           <Text style={styles.promptText}>{content?.prompt}</Text>
           <Text style={styles.promptMeta}>
             {content?.type} · difficulty {content?.difficulty}
@@ -249,26 +263,56 @@ export default function Learn() {
             {/* Translations */}
             <Text style={styles.sectionLabel}>EXPRESSIONS</Text>
             <View style={styles.translationList}>
-              {translations.map((t) => (
-                <View key={t.id} style={styles.translationCard}>
-                  <Text style={styles.translationText}>{t.text}</Text>
-                  <View style={styles.translationMetaRow}>
-                    <Text style={styles.translationStatus}>{t.status}</Text>
-                    {t.region ? (
-                      <Text style={styles.translationRegion}> · {t.region}</Text>
-                    ) : null}
-                    {t.register ? (
-                      <Text style={styles.translationRegion}> · {t.register}</Text>
-                    ) : null}
+              {translations.map((t) => {
+                const badge = STATUS_BADGES[t.status] || DEFAULT_BADGE;
+                return (
+                  <View key={t.id} style={styles.translationCard}>
+                    <View style={styles.translationHeader}>
+                      <Text style={styles.translationText}>{t.text}</Text>
+                      <View
+                        style={[
+                          styles.badge,
+                          { borderColor: badge.color },
+                        ]}
+                      >
+                        <Text
+                          style={[styles.badgeText, { color: badge.color }]}
+                        >
+                          {badge.label}
+                        </Text>
+                      </View>
+                    </View>
+                    <View style={styles.translationMetaRow}>
+                      {t.region ? (
+                        <Text style={styles.translationRegion}>
+                          {t.region}
+                        </Text>
+                      ) : null}
+                      {t.region && t.register ? (
+                        <Text style={styles.translationRegion}> · </Text>
+                      ) : null}
+                      {t.register ? (
+                        <Text style={styles.translationRegion}>
+                          {t.register}
+                        </Text>
+                      ) : null}
+                    </View>
                   </View>
-                </View>
-              ))}
+                );
+              })}
               {translations.length === 0 && (
                 <Text style={styles.noTranslation}>
                   No expressions yet — be the first to add one.
                 </Text>
               )}
             </View>
+
+            {/* Demo disclaimer */}
+            {translations.length > 0 && (
+              <Text style={styles.demoNote}>
+                Demo content — pending native speaker review.
+              </Text>
+            )}
 
             {/* Try your own */}
             {!showContribute && !submitted && (
@@ -379,14 +423,8 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.xxl,
   },
 
-  // Top bar
-  topBar: {
-    marginBottom: Spacing.xxl,
-  },
-  backLink: {
-    ...Typography.body,
-    color: Colors.primaryLight,
-  },
+  topBar: { marginBottom: Spacing.xxl },
+  backLink: { ...Typography.body, color: Colors.primaryLight },
 
   // Prompt
   promptBlock: {
@@ -420,30 +458,40 @@ const styles = StyleSheet.create({
   },
 
   // Translations
-  translationList: {
-    gap: Spacing.md,
-  },
+  translationList: { gap: Spacing.md },
   translationCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
     padding: Spacing.xl,
     borderWidth: 1,
     borderColor: Colors.border,
+    gap: Spacing.sm,
+  },
+  translationHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.md,
   },
   translationText: {
     ...Typography.h2,
     color: Colors.text,
-    marginBottom: Spacing.sm,
+    flex: 1,
+  },
+  badge: {
+    paddingVertical: 3,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+  },
+  badgeText: {
+    ...Typography.tiny,
+    fontWeight: '700',
+    letterSpacing: 0.5,
   },
   translationMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-  },
-  translationStatus: {
-    ...Typography.tiny,
-    color: Colors.primaryLight,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
   },
   translationRegion: {
     ...Typography.tiny,
@@ -455,8 +503,15 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     paddingVertical: Spacing.xl,
   },
+  demoNote: {
+    ...Typography.tiny,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    fontStyle: 'italic',
+    marginTop: Spacing.md,
+  },
 
-  // Contribute button (in learn screen)
+  // Contribute button
   contributeBtn: {
     marginTop: Spacing.xl,
     paddingVertical: Spacing.lg,
@@ -471,9 +526,7 @@ const styles = StyleSheet.create({
   },
 
   // Form
-  contributeForm: {
-    marginTop: Spacing.lg,
-  },
+  contributeForm: { marginTop: Spacing.lg },
   input: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.md,
@@ -537,10 +590,7 @@ const styles = StyleSheet.create({
     borderColor: Colors.success,
     gap: Spacing.xs,
   },
-  successTitle: {
-    ...Typography.bodyBold,
-    color: Colors.success,
-  },
+  successTitle: { ...Typography.bodyBold, color: Colors.success },
   successText: {
     ...Typography.caption,
     color: Colors.textSecondary,
