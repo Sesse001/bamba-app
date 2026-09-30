@@ -2,9 +2,10 @@
 // Language picker — shown when no active language, OR when user explicitly
 // taps "Switch ▸" on Home (?forceSwitch=1).
 //
-// State is reset on every focus so we never get stuck mid-save.
+// If the user has an active language AND did not force a switch, we silently
+// route to Home.
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -14,7 +15,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Colors, Spacing, Radius, Typography } from '../../theme';
 import {
   getAllLanguages,
@@ -26,29 +27,19 @@ import { getCurrentUser } from '../../services/auth';
 export default function LanguagePicker() {
   const router = useRouter();
   const params = useLocalSearchParams();
+
   const forceSwitch = params.forceSwitch === '1';
 
   const [checking, setChecking] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(null);
   const [languages, setLanguages] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState(null);
+  const [saveError, setSaveError] = useState(null);
 
   // ─────────────────────────────────────────────
-  // RESET ON FOCUS
-  // Every time the picker mounts OR comes into focus, reset all flags.
-  // This guarantees we never re-enter with a stuck "saving" state.
-  // ─────────────────────────────────────────────
-  useFocusEffect(
-    useCallback(() => {
-      setSaving(false);
-      setError(null);
-    }, [])
-  );
-
-  // ─────────────────────────────────────────────
-  // INITIAL CHECK
+  // INITIAL CHECK — do we already have a language?
   // ─────────────────────────────────────────────
   useEffect(() => {
     let mounted = true;
@@ -63,13 +54,12 @@ export default function LanguagePicker() {
       const activeRes = await getActiveLanguageId(user.uid);
       if (!mounted) return;
 
-      // Only auto-redirect if user did NOT explicitly ask to switch
       if (!forceSwitch && activeRes.ok && activeRes.languageId) {
         router.replace('/(tabs)/home');
         return;
       }
 
-      if (mounted) setChecking(false);
+      setChecking(false);
     })();
 
     return () => {
@@ -86,13 +76,14 @@ export default function LanguagePicker() {
 
     (async () => {
       setLoading(true);
+      setLoadError(null);
+
       const result = await getAllLanguages();
       if (!mounted) return;
 
       if (result.ok) {
         setLanguages(result.data);
 
-        // Pre-select the currently active language when switching
         if (forceSwitch) {
           const user = getCurrentUser();
           if (user) {
@@ -107,9 +98,8 @@ export default function LanguagePicker() {
         } else if (result.data.length > 0) {
           setSelectedId(result.data[0].id);
         }
-        setError(null);
       } else {
-        setError(result.error);
+        setLoadError(result.error || "Couldn't load languages");
       }
       if (mounted) setLoading(false);
     })();
@@ -119,6 +109,37 @@ export default function LanguagePicker() {
     };
   }, [checking, forceSwitch]);
 
+  const handleRetryLoad = () => {
+    setLoading(true);
+    setLoadError(null);
+    // Re-trigger by toggling checking (forces the effect to re-run)
+    setChecking(false);
+
+    (async () => {
+      const result = await getAllLanguages();
+      if (result.ok) {
+        setLanguages(result.data);
+        if (forceSwitch) {
+          const user = getCurrentUser();
+          if (user) {
+            const activeRes = await getActiveLanguageId(user.uid);
+            if (activeRes.ok && activeRes.languageId) {
+              setSelectedId(activeRes.languageId);
+            } else if (result.data.length > 0) {
+              setSelectedId(result.data[0].id);
+            }
+          }
+        } else if (result.data.length > 0) {
+          setSelectedId(result.data[0].id);
+        }
+        setLoadError(null);
+      } else {
+        setLoadError(result.error || "Couldn't load languages");
+      }
+      setLoading(false);
+    })();
+  };
+
   // ─────────────────────────────────────────────
   // SUBMIT
   // ─────────────────────────────────────────────
@@ -126,11 +147,11 @@ export default function LanguagePicker() {
     if (!selectedId || saving) return;
 
     setSaving(true);
-    setError(null);
+    setSaveError(null);
 
     const user = getCurrentUser();
     if (!user) {
-      setError('Not signed in. Please restart the app.');
+      setSaveError('Not signed in. Please restart the app.');
       setSaving(false);
       return;
     }
@@ -138,17 +159,18 @@ export default function LanguagePicker() {
     const result = await setActiveLanguageId(user.uid, selectedId);
 
     if (result.ok) {
-      // Reset saving BEFORE navigating, so if we come back here
-      // via Switch again, the button isn't stuck.
       setSaving(false);
       const stamp = Date.now();
       router.replace(`/(tabs)/home?t=${stamp}`);
     } else {
-      setError(result.error);
+      setSaveError(result.error || 'Could not save. Please try again.');
       setSaving(false);
     }
   };
 
+  // ─────────────────────────────────────────────
+  // CHECKING / LOADING
+  // ─────────────────────────────────────────────
   if (checking) {
     return (
       <SafeAreaView style={styles.container}>
@@ -170,13 +192,39 @@ export default function LanguagePicker() {
     );
   }
 
+  // ─────────────────────────────────────────────
+  // FATAL LOAD ERROR
+  // ─────────────────────────────────────────────
+  if (loadError) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.center}>
+          <View style={styles.errorCard}>
+            <Text style={styles.errorCardEmoji}>📡</Text>
+            <Text style={styles.errorCardTitle}>
+              Couldn't load languages
+            </Text>
+            <Text style={styles.errorCardText}>
+              Check your connection and try again.
+            </Text>
+            <Pressable style={styles.retryBtn} onPress={handleRetryLoad}>
+              <Text style={styles.retryText}>Retry</Text>
+            </Pressable>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // NORMAL RENDER
+  // ─────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Header */}
         <View style={styles.header}>
           <Text style={styles.title}>
             {forceSwitch ? 'Switch language' : 'Choose a language'}
@@ -188,7 +236,6 @@ export default function LanguagePicker() {
           </Text>
         </View>
 
-        {/* Language cards */}
         <View style={styles.languageList}>
           {languages.map((lang) => {
             const isSelected = selectedId === lang.id;
@@ -238,9 +285,10 @@ export default function LanguagePicker() {
           8 more South African languages catalogued — coming soon.
         </Text>
 
-        {error && (
+        {/* Save error (non-fatal, inline) */}
+        {saveError && (
           <View style={styles.errorBox}>
-            <Text style={styles.errorText}>{String(error)}</Text>
+            <Text style={styles.errorText}>{String(saveError)}</Text>
           </View>
         )}
 
@@ -274,6 +322,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     gap: Spacing.lg,
+    padding: Spacing.xl,
   },
   loadingText: { ...Typography.caption, color: Colors.textSecondary },
   content: { paddingHorizontal: Spacing.xl, paddingVertical: Spacing.xxl },
@@ -341,6 +390,54 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: Spacing.xl,
   },
+  btnPrimary: {
+    backgroundColor: Colors.primary,
+    paddingVertical: Spacing.lg,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 52,
+    marginTop: Spacing.xxl,
+  },
+  btnDisabled: { opacity: 0.5 },
+  btnPrimaryText: { ...Typography.bodyBold, color: Colors.text },
+
+  // Fatal error card
+  errorCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.xl,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+    width: '100%',
+    maxWidth: 340,
+  },
+  errorCardEmoji: { fontSize: 40, marginBottom: Spacing.md },
+  errorCardTitle: {
+    ...Typography.h3,
+    color: Colors.text,
+    marginBottom: Spacing.xs,
+    textAlign: 'center',
+  },
+  errorCardText: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: Spacing.lg,
+  },
+  retryBtn: {
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.xxl,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    minWidth: 120,
+    alignItems: 'center',
+  },
+  retryText: { ...Typography.bodyBold, color: Colors.primaryLight },
+
+  // Save error (inline)
   errorBox: {
     marginTop: Spacing.lg,
     padding: Spacing.md,
@@ -354,15 +451,4 @@ const styles = StyleSheet.create({
     color: Colors.danger,
     textAlign: 'center',
   },
-  btnPrimary: {
-    backgroundColor: Colors.primary,
-    paddingVertical: Spacing.lg,
-    borderRadius: Radius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 52,
-    marginTop: Spacing.xxl,
-  },
-  btnDisabled: { opacity: 0.5 },
-  btnPrimaryText: { ...Typography.bodyBold, color: Colors.text },
 });
