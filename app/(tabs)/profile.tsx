@@ -32,6 +32,7 @@ export default function Profile() {
   const router = useRouter();
 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [user, setUser] = useState(null);
   const [isGuest, setIsGuest] = useState(true);
   const [displayName, setDisplayName] = useState('');
@@ -40,13 +41,15 @@ export default function Profile() {
 
   const [showWarning, setShowWarning] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
-  const [error, setError] = useState(null);
+  const [signOutError, setSignOutError] = useState(null);
 
   const load = useCallback(async () => {
-    setError(null);
+    setLoadError(null);
 
     const current = getCurrentUser();
     if (!current) {
+      // Shouldn't happen — auth gate handles this
+      setLoadError('Not signed in');
       setLoading(false);
       return;
     }
@@ -55,9 +58,14 @@ export default function Profile() {
     setDisplayName(current.displayName || '');
     setEmail(current.email || '');
 
-    const countRes = await getUserContributionCount(current.uid);
-    if (countRes.ok) {
-      setContributionCount(countRes.count);
+    // Contribution count is nice-to-have — don't fail the whole screen if it errors
+    try {
+      const countRes = await getUserContributionCount(current.uid);
+      if (countRes.ok) {
+        setContributionCount(countRes.count);
+      }
+    } catch {
+      // Leave count at 0 — screen still works
     }
 
     setLoading(false);
@@ -74,6 +82,11 @@ export default function Profile() {
     router.replace('/(tabs)/home');
   };
 
+  const handleRetry = () => {
+    setLoading(true);
+    load();
+  };
+
   const handleCreateAccount = () => {
     setShowWarning(false);
     // Route to email signup — user is currently a guest, so signUpWithEmail
@@ -83,25 +96,26 @@ export default function Profile() {
 
   const handleSignOut = async () => {
     setSigningOut(true);
-    setError(null);
+    setSignOutError(null);
 
     const result = await signOutUser();
 
     if (result.ok) {
       // Auth gate will redirect to welcome automatically
-      // (because no user is signed in)
     } else {
-      setError(result.error);
+      setSignOutError(result.error);
       setSigningOut(false);
       setShowWarning(false);
     }
   };
 
   const handleSignOutPress = () => {
-    // Show warning first — always
     setShowWarning(true);
   };
 
+  // ─────────────────────────────────────────────
+  // LOADING
+  // ─────────────────────────────────────────────
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -112,6 +126,36 @@ export default function Profile() {
     );
   }
 
+  // ─────────────────────────────────────────────
+  // FATAL LOAD ERROR
+  // ─────────────────────────────────────────────
+  if (loadError) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.center}>
+          <View style={styles.errorCard}>
+            <Text style={styles.errorCardEmoji}>📡</Text>
+            <Text style={styles.errorCardTitle}>
+              Couldn't load your profile
+            </Text>
+            <Text style={styles.errorCardText}>
+              Check your connection and try again.
+            </Text>
+            <Pressable style={styles.retryBtn} onPress={handleRetry}>
+              <Text style={styles.retryText}>Retry</Text>
+            </Pressable>
+            <Pressable onPress={handleBack} hitSlop={12}>
+              <Text style={styles.backToHomeText}>Back to Home</Text>
+            </Pressable>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // NORMAL RENDER
+  // ─────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView
@@ -185,9 +229,10 @@ export default function Profile() {
           <Text style={styles.btnSecondaryText}>Sign out</Text>
         </Pressable>
 
-        {error && (
+        {/* Sign-out error (rare) */}
+        {signOutError && (
           <View style={styles.errorBox}>
-            <Text style={styles.errorText}>{String(error)}</Text>
+            <Text style={styles.errorText}>{String(signOutError)}</Text>
           </View>
         )}
 
@@ -212,7 +257,6 @@ export default function Profile() {
                 : 'You can sign back in anytime with your email and password.'}
             </Text>
 
-            {/* Primary action — depends on guest vs. email */}
             {isGuest ? (
               <>
                 <Pressable
@@ -281,6 +325,7 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    padding: Spacing.xl,
   },
   content: {
     paddingHorizontal: Spacing.xl,
@@ -461,7 +506,47 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.md,
   },
 
-  // Error
+  // Fatal error card
+  errorCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.xl,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+    width: '100%',
+    maxWidth: 340,
+  },
+  errorCardEmoji: { fontSize: 40, marginBottom: Spacing.md },
+  errorCardTitle: {
+    ...Typography.h3,
+    color: Colors.text,
+    marginBottom: Spacing.xs,
+    textAlign: 'center',
+  },
+  errorCardText: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: Spacing.lg,
+  },
+  retryBtn: {
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.xxl,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    minWidth: 120,
+    alignItems: 'center',
+  },
+  retryText: { ...Typography.bodyBold, color: Colors.primaryLight },
+  backToHomeText: {
+    ...Typography.caption,
+    color: Colors.textMuted,
+    marginTop: Spacing.md,
+  },
+
+  // Sign-out error (non-fatal, inline)
   errorBox: {
     marginTop: Spacing.lg,
     padding: Spacing.md,
