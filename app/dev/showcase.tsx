@@ -1,9 +1,10 @@
 // app/dev/showcase.tsx
-// Design system reference screen — moved here from (tabs)/index.tsx.
+// Design system reference screen.
 // Access via URL: /dev/showcase (Expo Go)
-// Not part of the main user flow.
-// Contains the temporary FIREBASE TEST + AUTH TEST sections still.
-// TODO: strip test sections before SADiLaR demo.
+// Not part of the main user flow. Not linked from any user-facing screen.
+//
+// Pure visual reference: colors, typography, buttons, inputs, cards, avatars, states.
+// No dev tools, no test buttons, no auth actions.
 
 import { useState } from 'react';
 import {
@@ -17,55 +18,10 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Colors, Spacing, Radius, Typography, Shadows } from '../../theme';
-import { testConnection } from '../../services/firebase';
-import { signInAsGuest, signOutUser } from '../../services/auth';
 
 export default function DesignShowcase() {
   const [email, setEmail] = useState('');
   const [pressed, setPressed] = useState(false);
-
-  // Firebase connection test state
-  const [fbState, setFbState] = useState('idle');
-  const [fbResult, setFbResult] = useState(null);
-
-  const runFirebaseTest = async () => {
-    setFbState('loading');
-    setFbResult(null);
-    const result = await testConnection();
-    if (result.ok) {
-      setFbState('success');
-      setFbResult(result.data);
-    } else {
-      setFbState('error');
-      setFbResult(result.error);
-    }
-  };
-
-  // Auth test state
-  const [authState, setAuthState] = useState('idle');
-  const [authResult, setAuthResult] = useState(null);
-
-  const runGuestAuthTest = async () => {
-    setAuthState('loading');
-    setAuthResult(null);
-    const result = await signInAsGuest();
-    if (result.ok) {
-      setAuthState('success');
-      setAuthResult({
-        uid: result.user.uid,
-        isAnonymous: result.user.isAnonymous,
-      });
-    } else {
-      setAuthState('error');
-      setAuthResult(result.error);
-    }
-  };
-
-  const handleSignOut = async () => {
-    await signOutUser();
-    setAuthState('idle');
-    setAuthResult(null);
-  };
 
   const colorSwatches = [
     { name: 'primary', value: Colors.primary },
@@ -91,113 +47,7 @@ export default function DesignShowcase() {
       <ScrollView contentContainerStyle={styles.content}>
 
         <Text style={styles.pageTitle}>🎨 Design System</Text>
-        <Text style={styles.pageSubtitle}>Bamba V2 — Dev Reference</Text>
-
-        {/* FIREBASE CONNECTION TEST */}
-        <Text style={styles.sectionLabel}>FIREBASE TEST</Text>
-        <View style={[styles.card, styles.testCard]}>
-          <Text style={[Typography.body, styles.textPrimary]}>
-            Tap to write & read a test doc in Firestore.
-          </Text>
-
-          <Pressable
-            style={[
-              styles.btnPrimary,
-              fbState === 'loading' && { opacity: 0.6 },
-            ]}
-            onPress={runFirebaseTest}
-            disabled={fbState === 'loading'}
-          >
-            {fbState === 'loading' ? (
-              <ActivityIndicator color={Colors.text} size="small" />
-            ) : (
-              <Text style={styles.btnPrimaryText}>Run Connection Test</Text>
-            )}
-          </Pressable>
-
-          {fbState === 'success' && (
-            <View style={styles.testSuccess}>
-              <Text style={[Typography.bodyBold, { color: Colors.success }]}>
-                ✅ Connected
-              </Text>
-              <Text style={[Typography.tiny, styles.textSecondary]}>
-                client: {fbResult?.client}
-              </Text>
-              <Text style={[Typography.tiny, styles.textSecondary]}>
-                platform: {fbResult?.platform}
-              </Text>
-              <Text style={[Typography.tiny, styles.textSecondary]}>
-                lastPing: {fbResult?.lastPing?.toDate?.()?.toISOString?.() ?? 'pending'}
-              </Text>
-            </View>
-          )}
-
-          {fbState === 'error' && (
-            <View style={styles.testError}>
-              <Text style={[Typography.bodyBold, { color: Colors.danger }]}>
-                ❌ Connection failed
-              </Text>
-              <Text style={[Typography.tiny, styles.textSecondary]}>
-                {String(fbResult)}
-              </Text>
-            </View>
-          )}
-        </View>
-
-        {/* AUTH TEST (temporary) */}
-        <Text style={styles.sectionLabel}>AUTH TEST</Text>
-        <View style={[styles.card, styles.testCard]}>
-          <Text style={[Typography.body, styles.textPrimary]}>
-            Tap to create an anonymous guest user.
-          </Text>
-
-          <Pressable
-            style={[
-              styles.btnPrimary,
-              authState === 'loading' && { opacity: 0.6 },
-            ]}
-            onPress={runGuestAuthTest}
-            disabled={authState === 'loading'}
-          >
-            {authState === 'loading' ? (
-              <ActivityIndicator color={Colors.text} size="small" />
-            ) : (
-              <Text style={styles.btnPrimaryText}>Test Guest Sign-In</Text>
-            )}
-          </Pressable>
-
-          {authState === 'success' && (
-            <View style={styles.testSuccess}>
-              <Text style={[Typography.bodyBold, { color: Colors.success }]}>
-                ✅ Guest signed in
-              </Text>
-              <Text style={[Typography.tiny, styles.textSecondary]}>
-                uid: {authResult?.uid}
-              </Text>
-              <Text style={[Typography.tiny, styles.textSecondary]}>
-                isAnonymous: {String(authResult?.isAnonymous)}
-              </Text>
-            </View>
-          )}
-
-          {authState === 'error' && (
-            <View style={styles.testError}>
-              <Text style={[Typography.bodyBold, { color: Colors.danger }]}>
-                ❌ Auth failed
-              </Text>
-              <Text style={[Typography.tiny, styles.textSecondary]}>
-                {String(authResult)}
-              </Text>
-            </View>
-          )}
-
-          <Pressable
-            style={[styles.btnSecondary, { marginTop: Spacing.md }]}
-            onPress={handleSignOut}
-          >
-            <Text style={styles.btnSecondaryText}>Sign Out (temp)</Text>
-          </Pressable>
-        </View>
+        <Text style={styles.pageSubtitle}>Bamba V2 — Reference</Text>
 
         {/* COLORS */}
         <Text style={styles.sectionLabel}>COLORS</Text>
@@ -442,25 +292,6 @@ const styles = StyleSheet.create({
   },
   cardIcon: { fontSize: 36 },
   row: { flexDirection: 'row', justifyContent: 'space-around' },
-  testCard: { borderColor: Colors.primary },
-  testSuccess: {
-    marginTop: Spacing.md,
-    padding: Spacing.md,
-    borderRadius: Radius.md,
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
-    borderWidth: 1,
-    borderColor: Colors.success,
-    gap: Spacing.xs,
-  },
-  testError: {
-    marginTop: Spacing.md,
-    padding: Spacing.md,
-    borderRadius: Radius.md,
-    backgroundColor: 'rgba(239, 68, 68, 0.1)',
-    borderWidth: 1,
-    borderColor: Colors.danger,
-    gap: Spacing.xs,
-  },
   btnPrimary: {
     backgroundColor: Colors.primary,
     paddingVertical: Spacing.lg,

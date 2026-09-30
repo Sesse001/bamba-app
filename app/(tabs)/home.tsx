@@ -2,7 +2,7 @@
 // Home dashboard — the hub after a language is picked.
 //
 // Shows:
-//   1. Active language header (+ My contributions · Switch links)
+//   1. Active language header (+ Contributions · Profile · Switch links)
 //   2. Continue learning — first INCOMPLETE item
 //   3. Progress — X of Y completed
 //   4. Contribute — proper card section
@@ -34,11 +34,13 @@ export default function Home() {
   const [language, setLanguage] = useState(null);
   const [nextItem, setNextItem] = useState(null);
   const [allComplete, setAllComplete] = useState(false);
+  const [noContent, setNoContent] = useState(false); // NEW — content fetch failed / empty
   const [progress, setProgress] = useState({ seen: 0, completed: 0, total: 0 });
   const [error, setError] = useState(null);
 
   const load = useCallback(async () => {
     setError(null);
+    setNoContent(false);
 
     const user = getCurrentUser();
     if (!user) {
@@ -65,12 +67,25 @@ export default function Home() {
     // 2. Demo lesson (first 10 items)
     const contentRes = await getDemoLesson(activeRes.languageId, 10);
     if (!contentRes.ok) {
-      setError('Could not load lesson');
+      // Content fetch FAILED (network, rules, etc.) — show error, don't say "complete"
+      setError('Could not load lesson content');
+      setNoContent(true);
       setLoading(false);
       return;
     }
 
     const items = contentRes.data || [];
+
+    // Empty content is a special case — NOT "all complete"
+    if (items.length === 0) {
+      setNoContent(true);
+      setNextItem(null);
+      setAllComplete(false);
+      setProgress({ seen: 0, completed: 0, total: 0 });
+      setLoading(false);
+      return;
+    }
+
     const contentIds = items.map((i) => i.id);
 
     // 3. Progress summary
@@ -86,9 +101,14 @@ export default function Home() {
         setNextItem(nextRes.next);
         setAllComplete(false);
       } else {
+        // All items have been marked completed
         setNextItem(null);
         setAllComplete(true);
       }
+    } else {
+      // Fallback — if progress lookup failed, just show the first item
+      setNextItem(items[0] || null);
+      setAllComplete(false);
     }
 
     setLoading(false);
@@ -118,6 +138,10 @@ export default function Home() {
     router.push('/(tabs)/contributions');
   };
 
+  const handleProfile = () => {
+    router.push('/(tabs)/profile');
+  };
+
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -135,7 +159,7 @@ export default function Home() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* 1. Header with My contributions + Switch */}
+        {/* 1. Header with Contributions · Profile · Switch */}
         <View style={styles.headerRow}>
           <View style={styles.headerLeft}>
             <Text style={styles.headerLabel}>LEARNING</Text>
@@ -154,7 +178,13 @@ export default function Home() {
 
           <View style={styles.topRightLinks}>
             <Pressable onPress={handleMyContributions} hitSlop={12}>
-              <Text style={styles.switchLink}>My contributions</Text>
+              <Text style={styles.switchLink}>Contributions</Text>
+            </Pressable>
+
+            <Text style={styles.linkSeparator}>·</Text>
+
+            <Pressable onPress={handleProfile} hitSlop={12}>
+              <Text style={styles.switchLink}>Profile</Text>
             </Pressable>
 
             <Text style={styles.linkSeparator}>·</Text>
@@ -168,7 +198,21 @@ export default function Home() {
         {/* 2. Continue learning */}
         <Text style={styles.sectionLabel}>CONTINUE LEARNING</Text>
 
-        {nextItem ? (
+        {noContent ? (
+          // Content fetch failed OR empty — NOT "all complete"
+          <View style={styles.errorCard}>
+            <Text style={styles.errorCardEmoji}>📡</Text>
+            <Text style={styles.errorCardTitle}>
+              Couldn't load lesson content
+            </Text>
+            <Text style={styles.errorCardText}>
+              Check your connection and try again.
+            </Text>
+            <Pressable style={styles.errorRetryBtn} onPress={load}>
+              <Text style={styles.errorRetryText}>Retry</Text>
+            </Pressable>
+          </View>
+        ) : nextItem ? (
           <Pressable
             style={styles.continueCard}
             onPress={() =>
@@ -226,7 +270,7 @@ export default function Home() {
             />
           </View>
           <Text style={styles.progressDetail}>
-            {progress.seen} seen · {progress.total - progress.seen} new
+            {progress.seen} seen · {Math.max(progress.total - progress.seen, 0)} new
           </Text>
         </View>
 
@@ -382,6 +426,40 @@ const styles = StyleSheet.create({
     ...Typography.caption,
     color: Colors.textSecondary,
     textAlign: 'center',
+  },
+
+  // Error card — no content available
+  errorCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.xl,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+  },
+  errorCardEmoji: { fontSize: 40, marginBottom: Spacing.md },
+  errorCardTitle: {
+    ...Typography.h3,
+    color: Colors.text,
+    marginBottom: Spacing.xs,
+    textAlign: 'center',
+  },
+  errorCardText: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: Spacing.lg,
+  },
+  errorRetryBtn: {
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.xxl,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+  },
+  errorRetryText: {
+    ...Typography.bodyBold,
+    color: Colors.primaryLight,
   },
 
   // Empty

@@ -1,6 +1,10 @@
 // app/_layout.tsx
 // Root layout — decides whether to show auth screens or the main app.
 // Uses Firebase auth state to gate access.
+//
+// Special case: signed-in GUESTS can reach (auth)/email to UPGRADE their
+// account via linkWithCredential. Signed-in email users cannot (no reason
+// to sign up again).
 
 import { useEffect, useState } from 'react';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
@@ -30,6 +34,14 @@ export default function RootLayout() {
     if (initializing) return;
 
     const inAuthGroup = segments[0] === '(auth)';
+    const onEmailScreen = inAuthGroup && segments[1] === 'email';
+    const isGuest = user?.isAnonymous === true;
+
+    // Special case: guests on the email screen are UPGRADING.
+    // Don't bounce them out — let them complete signup.
+    if (isGuest && onEmailScreen) {
+      return;
+    }
 
     if (!user && !inAuthGroup) {
       // Not signed in, not on auth screen → send to welcome

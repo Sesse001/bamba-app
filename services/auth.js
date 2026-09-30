@@ -37,8 +37,28 @@ export async function signInAsGuest() {
     const credential = await signInAnonymously(auth);
     const user = credential.user;
 
-    // Create the user profile doc in Firestore
-    await ensureUserProfile(user, { isGuest: true });
+    // Force the auth token to be ready BEFORE Firestore writes.
+    // Without this, Firestore sometimes hangs on the first write after
+    // sign-in because the token isn't fully propagated yet.
+    try {
+      await user.getIdToken(true);
+    } catch {
+      // Token fetch failed — continue anyway; the write below will error
+      // with a clear message if the token truly isn't ready.
+    }
+
+    // Create the user profile doc in Firestore.
+    // Wrapped in a timeout so we never hang forever if Firestore is slow.
+    await Promise.race([
+      ensureUserProfile(user, { isGuest: true }),
+      new Promise((_, reject) =>
+        setTimeout(
+          () =>
+            reject(new Error('Profile setup timed out. Please try again.')),
+          10000
+        )
+      ),
+    ]);
 
     return { ok: true, user };
   } catch (error) {
@@ -71,33 +91,65 @@ export async function signUpWithEmail(email, password, displayName) {
       const result = await linkWithCredential(currentUser, credential);
       const upgradedUser = result.user;
 
+      // Force fresh token before Firestore write
+      try {
+        await upgradedUser.getIdToken(true);
+      } catch {}
+
       if (displayName) {
         await updateProfile(upgradedUser, { displayName });
       }
 
-      await ensureUserProfile(upgradedUser, {
-        isGuest: false,
-        displayName: displayName || null,
-        email,
-        upgradedFromGuest: true,
-      });
+      await Promise.race([
+        ensureUserProfile(upgradedUser, {
+          isGuest: false,
+          displayName: displayName || null,
+          email,
+          upgradedFromGuest: true,
+        }),
+        new Promise((_, reject) =>
+          setTimeout(
+            () =>
+              reject(new Error('Profile setup timed out. Please try again.')),
+            10000
+          )
+        ),
+      ]);
 
       return { ok: true, user: upgradedUser, upgraded: true };
     }
 
     // Case 2: No user → fresh signup
-    const credential = await createUserWithEmailAndPassword(auth, email, password);
+    const credential = await createUserWithEmailAndPassword(
+      auth,
+      email,
+      password
+    );
     const newUser = credential.user;
+
+    // Force fresh token before Firestore write
+    try {
+      await newUser.getIdToken(true);
+    } catch {}
 
     if (displayName) {
       await updateProfile(newUser, { displayName });
     }
 
-    await ensureUserProfile(newUser, {
-      isGuest: false,
-      displayName: displayName || null,
-      email,
-    });
+    await Promise.race([
+      ensureUserProfile(newUser, {
+        isGuest: false,
+        displayName: displayName || null,
+        email,
+      }),
+      new Promise((_, reject) =>
+        setTimeout(
+          () =>
+            reject(new Error('Profile setup timed out. Please try again.')),
+          10000
+        )
+      ),
+    ]);
 
     return { ok: true, user: newUser, upgraded: false };
   } catch (error) {
@@ -107,8 +159,6 @@ export async function signUpWithEmail(email, password, displayName) {
 
 /**
  * Sign in with an existing email/password account.
- * Note: this REPLACES any anonymous session. If the guest had progress,
- * it stays attached to the old anonymous UID. Use signUpWithEmail to preserve.
  *
  * @param {string} email
  * @param {string} password
@@ -184,7 +234,7 @@ async function ensureUserProfile(user, extra = {}) {
       email: extra.email ?? null,
       upgradedFromGuest: extra.upgradedFromGuest ?? false,
       languages: [],
-      role: 'learner', // learner | contributor | both — extend later
+      role: 'learner',
     });
   } else {
     // Merge-only update — don't clobber existing data
@@ -223,6 +273,10 @@ function mapAuthError(error) {
       return 'Too many attempts. Please try again in a moment.';
     case 'auth/network-request-failed':
       return 'Network error. Check your connection.';
+    case 'auth/credential-already-in-use':
+      return 'That email is already linked to another account. Try signing in instead.';
+    case 'auth/provider-already-linked':
+      return 'This account is already linked. Try signing in.';
     default:
       return error?.message || 'Something went wrong. Please try again.';
   }
