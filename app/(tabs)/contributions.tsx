@@ -27,7 +27,7 @@ import { Colors, Spacing, Radius, Typography } from '../../theme';
 import { getMyContributionsWithContent } from '../../services/contributions';
 import { getCurrentUser } from '../../services/auth';
 
-// Status → color mapping. Kept local for now; could move to theme later.
+// Status → color mapping
 const STATUS_COLORS = {
   pending: Colors.warning,
   community_supported: Colors.info,
@@ -48,15 +48,15 @@ export default function Contributions() {
   const router = useRouter();
 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [contributions, setContributions] = useState([]);
-  const [error, setError] = useState(null);
 
   const load = useCallback(async () => {
-    setError(null);
+    setLoadError(null);
 
     const user = getCurrentUser();
     if (!user) {
-      setError('Not signed in');
+      setLoadError('Not signed in');
       setLoading(false);
       return;
     }
@@ -65,12 +65,12 @@ export default function Contributions() {
     if (result.ok) {
       setContributions(result.data || []);
     } else {
-      setError(result.error);
+      setLoadError(result.error || "Couldn't load your contributions");
     }
     setLoading(false);
   }, []);
 
-  // Reload whenever the screen comes into focus (e.g. after a new contribution)
+  // Reload whenever the screen comes into focus
   useFocusEffect(
     useCallback(() => {
       setLoading(true);
@@ -86,6 +86,11 @@ export default function Contributions() {
     router.replace('/(tabs)/home');
   };
 
+  const handleRetry = () => {
+    setLoading(true);
+    load();
+  };
+
   // Format a Firestore timestamp as a friendly relative time
   const formatDate = (timestamp) => {
     if (!timestamp) return '';
@@ -99,7 +104,6 @@ export default function Contributions() {
       if (diffDays === 1) return 'Yesterday';
       if (diffDays < 7) return `${diffDays} days ago`;
 
-      // Longer ago — show a simple date
       return date.toLocaleDateString('en-ZA', {
         day: 'numeric',
         month: 'short',
@@ -124,7 +128,34 @@ export default function Contributions() {
   }
 
   // ─────────────────────────────────────────────
-  // RENDER
+  // FATAL LOAD ERROR
+  // ─────────────────────────────────────────────
+  if (loadError) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.center}>
+          <View style={styles.errorCard}>
+            <Text style={styles.errorCardEmoji}>📡</Text>
+            <Text style={styles.errorCardTitle}>
+              Couldn't load your contributions
+            </Text>
+            <Text style={styles.errorCardText}>
+              Check your connection and try again.
+            </Text>
+            <Pressable style={styles.retryBtn} onPress={handleRetry}>
+              <Text style={styles.retryText}>Retry</Text>
+            </Pressable>
+            <Pressable onPress={handleBack} hitSlop={12}>
+              <Text style={styles.backToHomeText}>Back to Home</Text>
+            </Pressable>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // NORMAL RENDER
   // ─────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.container}>
@@ -151,15 +182,8 @@ export default function Contributions() {
           </Text>
         </View>
 
-        {/* Error */}
-        {error && (
-          <View style={styles.errorBox}>
-            <Text style={styles.errorText}>{String(error)}</Text>
-          </View>
-        )}
-
         {/* Empty state */}
-        {!error && contributions.length === 0 && (
+        {contributions.length === 0 && (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyEmoji}>🌍</Text>
             <Text style={styles.emptyTitle}>No contributions yet</Text>
@@ -181,10 +205,8 @@ export default function Contributions() {
               const statusLabel = STATUS_LABELS[c.status] || c.status;
               return (
                 <View key={c.id} style={styles.card}>
-                  {/* Submitted expression */}
                   <Text style={styles.expression}>"{c.text}"</Text>
 
-                  {/* Parent prompt + language */}
                   <View style={styles.metaRow}>
                     <Text style={styles.metaLabel}>for</Text>
                     <Text style={styles.metaPrompt}>
@@ -198,7 +220,6 @@ export default function Contributions() {
                     ) : null}
                   </View>
 
-                  {/* Footer row: status + date */}
                   <View style={styles.footerRow}>
                     <View
                       style={[
@@ -240,25 +261,17 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    padding: Spacing.xl,
   },
   content: {
     paddingHorizontal: Spacing.xl,
     paddingVertical: Spacing.xxl,
   },
 
-  // Top bar
-  topBar: {
-    marginBottom: Spacing.xl,
-  },
-  backLink: {
-    ...Typography.body,
-    color: Colors.primaryLight,
-  },
+  topBar: { marginBottom: Spacing.xl },
+  backLink: { ...Typography.body, color: Colors.primaryLight },
 
-  // Header
-  header: {
-    marginBottom: Spacing.xxl,
-  },
+  header: { marginBottom: Spacing.xxl },
   title: {
     ...Typography.h1,
     color: Colors.text,
@@ -278,10 +291,7 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     alignItems: 'center',
   },
-  emptyEmoji: {
-    fontSize: 48,
-    marginBottom: Spacing.md,
-  },
+  emptyEmoji: { fontSize: 48, marginBottom: Spacing.md },
   emptyTitle: {
     ...Typography.h3,
     color: Colors.text,
@@ -295,9 +305,7 @@ const styles = StyleSheet.create({
   },
 
   // List
-  list: {
-    gap: Spacing.md,
-  },
+  list: { gap: Spacing.md },
   card: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -306,10 +314,7 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     gap: Spacing.md,
   },
-  expression: {
-    ...Typography.h3,
-    color: Colors.text,
-  },
+  expression: { ...Typography.h3, color: Colors.text },
   metaRow: {
     flexDirection: 'row',
     alignItems: 'baseline',
@@ -343,21 +348,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     gap: 6,
   },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  statusText: {
-    ...Typography.tiny,
-    fontWeight: '600',
-  },
-  dateText: {
-    ...Typography.tiny,
-    color: Colors.textMuted,
-  },
+  statusDot: { width: 6, height: 6, borderRadius: 3 },
+  statusText: { ...Typography.tiny, fontWeight: '600' },
+  dateText: { ...Typography.tiny, color: Colors.textMuted },
 
-  // Buttons
+  // Primary button (empty state)
   btnPrimary: {
     backgroundColor: Colors.primary,
     paddingVertical: Spacing.lg,
@@ -367,23 +362,45 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     minHeight: 52,
   },
-  btnPrimaryText: {
-    ...Typography.bodyBold,
-    color: Colors.text,
-  },
+  btnPrimaryText: { ...Typography.bodyBold, color: Colors.text },
 
-  // Error
-  errorBox: {
-    marginBottom: Spacing.lg,
-    padding: Spacing.md,
-    borderRadius: Radius.md,
-    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+  // Fatal error card (centered, matches Home/Learn)
+  errorCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.xl,
     borderWidth: 1,
-    borderColor: Colors.danger,
+    borderColor: Colors.border,
+    alignItems: 'center',
+    width: '100%',
+    maxWidth: 340,
   },
-  errorText: {
-    ...Typography.caption,
-    color: Colors.danger,
+  errorCardEmoji: { fontSize: 40, marginBottom: Spacing.md },
+  errorCardTitle: {
+    ...Typography.h3,
+    color: Colors.text,
+    marginBottom: Spacing.xs,
     textAlign: 'center',
+  },
+  errorCardText: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: Spacing.lg,
+  },
+  retryBtn: {
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.xxl,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    minWidth: 120,
+    alignItems: 'center',
+  },
+  retryText: { ...Typography.bodyBold, color: Colors.primaryLight },
+  backToHomeText: {
+    ...Typography.caption,
+    color: Colors.textMuted,
+    marginTop: Spacing.md,
   },
 });
