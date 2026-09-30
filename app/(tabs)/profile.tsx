@@ -1,16 +1,17 @@
 // app/(tabs)/profile.tsx
-// Profile + sign out.
+// Profile + sign out + preferences.
 //
-// Shows current account info and offers a sign-out flow.
+// Shows current account info, stats, preferences, and offers a sign-out flow.
 // If user is a guest, warns them BEFORE sign-out that their progress
 // and contributions are tied to a temporary account.
 //
-// Sign-out flow:
-//   Guest  → Warning dialog → Create Account / Cancel / Sign Out Anyway
-//   Email  → Simple confirmation → Cancel / Sign Out
+// Reminder preference:
+//   - Toggle "Daily reminder" on → request permission → save to Firestore
+//   - Toggle off → save to Firestore
+//   - If permission denied permanently → show message directing to device settings
 //
-// Signing out is destructive for guests because Firebase creates a
-// brand new anonymous user on next sign-in — the old guest's data is lost.
+// Note: expo-notifications has limited functionality in Expo Go.
+// Permission prompt works; actual notification delivery requires a dev build.
 
 import { useState, useCallback } from 'react';
 import {
@@ -21,12 +22,20 @@ import {
   ActivityIndicator,
   ScrollView,
   Modal,
+  Switch,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Colors, Spacing, Radius, Typography } from '../../theme';
 import { getCurrentUser, signOutUser } from '../../services/auth';
 import { getUserContributionCount } from '../../services/contributions';
+import {
+  getPermissionStatus,
+  requestPermission,
+  getReminderPreference,
+  setReminderPreference,
+} from '../../services/notifications';
 
 export default function Profile() {
   const router = useRouter();
@@ -39,6 +48,12 @@ export default function Profile() {
   const [email, setEmail] = useState('');
   const [contributionCount, setContributionCount] = useState(0);
 
+  // Reminder state
+  const [reminderEnabled, setReminderEnabled] = useState(false);
+  const [reminderSaving, setReminderSaving] = useState(false);
+  const [permissionDenied, setPermissionDenied] = useState(false);
+
+  // Sign out state
   const [showWarning, setShowWarning] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState(null);
@@ -48,7 +63,6 @@ export default function Profile() {
 
     const current = getCurrentUser();
     if (!current) {
-      // Shouldn't happen — auth gate handles this
       setLoadError('Not signed in');
       setLoading(false);
       return;
@@ -61,11 +75,24 @@ export default function Profile() {
     // Contribution count is nice-to-have — don't fail the whole screen if it errors
     try {
       const countRes = await getUserContributionCount(current.uid);
-      if (countRes.ok) {
-        setContributionCount(countRes.count);
+      if (countRes.ok) setContributionCount(countRes.count);
+    } catch {
+      // Leave count at 0
+    }
+
+    // Reminder preference + permission status
+    try {
+      const prefRes = await getReminderPreference(current.uid);
+      if (prefRes.ok) setReminderEnabled(prefRes.enabled);
+
+      const permRes = await getPermissionStatus();
+      if (permRes.ok && !permRes.granted && !permRes.canAskAgain) {
+        setPermissionDenied(true);
+      } else {
+        setPermissionDenied(false);
       }
     } catch {
-      // Leave count at 0 — screen still works
+      // Non-fatal — defaults apply
     }
 
     setLoading(false);
@@ -89,8 +116,6 @@ export default function Profile() {
 
   const handleCreateAccount = () => {
     setShowWarning(false);
-    // Route to email signup — user is currently a guest, so signUpWithEmail
-    // will UPGRADE their account (same UID, all data preserved)
     router.push('/(auth)/email');
   };
 
@@ -101,7 +126,7 @@ export default function Profile() {
     const result = await signOutUser();
 
     if (result.ok) {
-      // Auth gate will redirect to welcome automatically
+      // Auth gate handles redirect
     } else {
       setSignOutError(result.error);
       setSigningOut(false);
@@ -111,6 +136,49 @@ export default function Profile() {
 
   const handleSignOutPress = () => {
     setShowWarning(true);
+  };
+
+  // ─────────────────────────────────────────────
+  // REMINDER TOGGLE
+  // ─────────────────────────────────────────────
+  const handleReminderToggle = async (nextValue) => {
+    if (reminderSaving || !user) return;
+
+    setReminderSaving(true);
+
+    if (nextValue) {
+      // Turning ON — need permission first
+      const permRes = await requestPermission();
+
+      if (!permRes.ok || !permRes.granted) {
+        // Denied or failed
+        if (permRes.canAskAgain === false) {
+          setPermissionDenied(true);
+        }
+        setReminderSaving(false);
+        return;
+      }
+
+      // Permission granted — save preference
+      const saveRes = await setReminderPreference(user.uid, true);
+      if (saveRes.ok) {
+        setReminderEnabled(true);
+      }
+    } else {
+      // Turning OFF — just save
+      const saveRes = await setReminderPreference(user.uid, false);
+      if (saveRes.ok) {
+        setReminderEnabled(false);
+      }
+    }
+
+    setReminderSaving(false);
+  };
+
+  const handleOpenSettings = () => {
+    Linking.openSettings().catch(() => {
+      // Fallback — some devices don't support openSettings
+    });
   };
 
   // ─────────────────────────────────────────────
@@ -213,6 +281,46 @@ export default function Profile() {
           </View>
         </View>
 
+        {/* Preferences */}
+        <Text style={styles.sectionLabel}>PREFERENCES</Text>
+        <View style={styles.prefCard}>
+          <View style={styles.prefRow}>
+            <View style={styles.prefBody}>
+              <Text style={styles.prefTitle}>Daily reminder</Text>
+              <Text style={styles.prefSubtitle}>
+                A gentle nudge to keep learning.
+              </Text>
+            </View>
+
+            {reminderSaving ? (
+              <ActivityIndicator color={Colors.primary} size="small" />
+            ) : (
+              <Switch
+                value={reminderEnabled}
+                onValueChange={handleReminderToggle}
+                trackColor={{
+                  false: Colors.surfaceLight,
+                  true: Colors.primary,
+                }}
+                thumbColor={Colors.text}
+                disabled={permissionDenied}
+              />
+            )}
+          </View>
+
+          {/* Permission denied notice */}
+          {permissionDenied && (
+            <Pressable
+              style={styles.permDeniedBox}
+              onPress={handleOpenSettings}
+            >
+              <Text style={styles.permDeniedText}>
+                Notifications disabled — tap to enable in device settings.
+              </Text>
+            </Pressable>
+          )}
+        </View>
+
         {/* Actions */}
         <Text style={styles.sectionLabel}>ACCOUNT</Text>
 
@@ -229,7 +337,7 @@ export default function Profile() {
           <Text style={styles.btnSecondaryText}>Sign out</Text>
         </Pressable>
 
-        {/* Sign-out error (rare) */}
+        {/* Sign-out error */}
         {signOutError && (
           <View style={styles.errorBox}>
             <Text style={styles.errorText}>{String(signOutError)}</Text>
@@ -333,10 +441,7 @@ const styles = StyleSheet.create({
   },
 
   topBar: { marginBottom: Spacing.xl },
-  backLink: {
-    ...Typography.body,
-    color: Colors.primaryLight,
-  },
+  backLink: { ...Typography.body, color: Colors.primaryLight },
 
   title: {
     ...Typography.h1,
@@ -344,7 +449,7 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.xxl,
   },
 
-  // Identity card
+  // Identity
   identityCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -364,10 +469,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  avatarText: {
-    ...Typography.h1,
-    color: Colors.text,
-  },
+  avatarText: { ...Typography.h1, color: Colors.text },
   identityBody: { flex: 1 },
   identityName: {
     ...Typography.h3,
@@ -420,13 +522,45 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  statLabel: {
-    ...Typography.body,
+  statLabel: { ...Typography.body, color: Colors.textSecondary },
+  statValue: { ...Typography.numberSmall, color: Colors.text },
+
+  // Preferences
+  prefCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.xl,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: Spacing.md,
+  },
+  prefRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.md,
+  },
+  prefBody: { flex: 1 },
+  prefTitle: {
+    ...Typography.bodyBold,
+    color: Colors.text,
+    marginBottom: 2,
+  },
+  prefSubtitle: {
+    ...Typography.caption,
     color: Colors.textSecondary,
   },
-  statValue: {
-    ...Typography.numberSmall,
-    color: Colors.text,
+  permDeniedBox: {
+    padding: Spacing.md,
+    borderRadius: Radius.md,
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    borderWidth: 1,
+    borderColor: Colors.warning,
+  },
+  permDeniedText: {
+    ...Typography.caption,
+    color: Colors.warning,
+    textAlign: 'center',
   },
 
   // Buttons
@@ -469,10 +603,7 @@ const styles = StyleSheet.create({
     maxWidth: 420,
     gap: Spacing.md,
   },
-  modalTitle: {
-    ...Typography.h3,
-    color: Colors.text,
-  },
+  modalTitle: { ...Typography.h3, color: Colors.text },
   modalText: {
     ...Typography.caption,
     color: Colors.textSecondary,
@@ -546,7 +677,7 @@ const styles = StyleSheet.create({
     marginTop: Spacing.md,
   },
 
-  // Sign-out error (non-fatal, inline)
+  // Inline error
   errorBox: {
     marginTop: Spacing.lg,
     padding: Spacing.md,
