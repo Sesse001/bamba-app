@@ -1,7 +1,6 @@
 // app/(auth)/_layout.tsx
-// Layout wrapper for authentication screens.
-// Matches the pattern used by app/(tabs)/_layout.tsx — hides the header
-// so each auth screen can render its own branded layout.
+// Layout wrapper for authentication + onboarding screens.
+// Hides the default header so each screen renders its own branded layout.
 
 import { Stack } from 'expo-router';
 import { Colors } from '../../theme';
@@ -15,6 +14,7 @@ export default function AuthLayout() {
         animation: 'fade',
       }}
     >
+      <Stack.Screen name="onboarding" />
       <Stack.Screen name="welcome" />
       <Stack.Screen name="email" />
     </Stack>
