@@ -1,50 +1,68 @@
-# Welcome to your Expo app 👋
+# Bamba
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+A South African language-learning and translation contribution platform.
 
-## Get started
+Learn isiZulu, Sesotho, Xitsonga, and more — while contributing new language knowledge that helps preserve them for future generations.
 
-1. Install dependencies
+---
 
+## What Bamba is
+
+Bamba is **two connected things**:
+
+- **📚 Learn** — Short lessons in South African languages. Reveal expressions, learn multiple valid ways to say something, track your progress.
+- **🌍 Contribute** — Add your own expressions. Every contribution becomes structured, queryable language data.
+
+Unlike traditional language apps, Bamba never presents translations as "correct" or "incorrect." Regional variants, formal/casual registers, and community alternatives are all first-class.
+
+---
+
+## Current state (V2 rebuild)
+
+**Working on-device:**
+- Guest-first auth, upgradeable to email/password (same UID, all data preserved)
+- Language picker (isiZulu, Sesotho, Xitsonga — plus 8 catalogued for future)
+- Learning flow: prompt → reveal translations → try your own
+- Contribution submission with status tracking
+- My Contributions screen
+- Per-language progress tracking
+- Language switching with preserved state
+- Onboarding (first-launch only)
+- Daily reminder preference (plumbing only — scheduling deferred)
+- Standardized error handling across all screens
+- Firestore rules locked down to owner-only for user data
+
+**Not yet built:**
+- Actual daily reminder scheduling
+- Voice / audio pronunciation
+- Multiple-choice practice mode
+- Community voting on contributions
+- Admin / sub-admin reviewer workflow
+- Web version
+- App icon / branding (in progress)
+
+---
+
+## Tech stack
+
+- **Expo SDK 54** + Expo Router (file-based routing)
+- **Firebase** (Auth + Firestore)
+- **AsyncStorage** (local cache for auth + language preference)
+- **expo-notifications**, **expo-local-authentication** (installed, partially wired)
+
+---
+
+## Getting started
+
+### Prerequisites
+
+- Node.js 18+
+- Expo Go on your phone (for development)
+- A Firebase project (see setup below)
+
+### Setup
+
+1. **Clone the repo:**
    ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
-```
-
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
-
-## Learn more
-
-To learn more about developing your project with Expo, look at the following resources:
-
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
-
-## Join the community
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+   git clone https://github.com/Sesse001/bamba-app.git
+   cd bamba-app
