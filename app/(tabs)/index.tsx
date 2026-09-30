@@ -112,7 +112,6 @@ export default function LanguagePicker() {
   const handleRetryLoad = () => {
     setLoading(true);
     setLoadError(null);
-    // Re-trigger by toggling checking (forces the effect to re-run)
     setChecking(false);
 
     (async () => {
@@ -285,6 +284,10 @@ export default function LanguagePicker() {
           8 more South African languages catalogued — coming soon.
         </Text>
 
+        <Text style={styles.demoNote}>
+          Demo languages — content is prototype, not yet native-speaker verified.
+        </Text>
+
         {/* Save error (non-fatal, inline) */}
         {saveError && (
           <View style={styles.errorBox}>
@@ -389,6 +392,14 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
     textAlign: 'center',
     marginTop: Spacing.xl,
+  },
+  demoNote: {
+    ...Typography.tiny,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    fontStyle: 'italic',
+    marginTop: Spacing.sm,
+    paddingHorizontal: Spacing.lg,
   },
   btnPrimary: {
     backgroundColor: Colors.primary,
