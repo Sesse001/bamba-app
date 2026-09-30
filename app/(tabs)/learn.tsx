@@ -65,10 +65,11 @@ export default function Learn() {
   const initialContentId = params.contentId || null;
 
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null); // fatal — can't proceed
   const [content, setContent] = useState(null);
   const [translations, setTranslations] = useState([]);
   const [revealed, setRevealed] = useState(false);
-  const [error, setError] = useState(null);
+  const [actionError, setActionError] = useState(null); // non-fatal — show inline
 
   // Contribution state
   const [showContribute, setShowContribute] = useState(false);
@@ -79,6 +80,7 @@ export default function Learn() {
 
   // Refs
   const markedSeenRef = useRef(false);
+  const lastContentIdRef = useRef(null);
 
   // ─────────────────────────────────────────────
   // LOAD
@@ -86,23 +88,25 @@ export default function Learn() {
 
   const loadItem = useCallback(async (contentId) => {
     setLoading(true);
-    setError(null);
+    setLoadError(null);
+    setActionError(null);
     setRevealed(false);
     setShowContribute(false);
     setContribText('');
     setContribNote('');
     setSubmitted(false);
     markedSeenRef.current = false;
+    lastContentIdRef.current = contentId;
 
     if (!contentId) {
-      setError('No content to show');
+      setLoadError('No content to show');
       setLoading(false);
       return;
     }
 
     const contentRes = await getContentItem(contentId);
     if (!contentRes.ok) {
-      setError(contentRes.error);
+      setLoadError(contentRes.error || "Couldn't load this card");
       setLoading(false);
       return;
     }
@@ -111,13 +115,20 @@ export default function Learn() {
     const transRes = await getTranslationsForContent(contentId);
     if (transRes.ok) {
       setTranslations(transRes.data || []);
+    } else {
+      // Translations failing isn't fatal — user can still reveal and see "no expressions"
+      setTranslations([]);
     }
 
     // Mark as seen (once per card)
     const user = getCurrentUser();
     if (user && !markedSeenRef.current) {
       markedSeenRef.current = true;
-      await markSeen(user.uid, contentId);
+      try {
+        await markSeen(user.uid, contentId);
+      } catch {
+        // Non-fatal — progress mark can be retried on Next
+      }
     }
 
     setLoading(false);
@@ -126,6 +137,10 @@ export default function Learn() {
   useEffect(() => {
     loadItem(initialContentId);
   }, [initialContentId, loadItem]);
+
+  const handleRetryLoad = () => {
+    loadItem(lastContentIdRef.current);
+  };
 
   // ─────────────────────────────────────────────
   // ACTIONS
@@ -136,24 +151,28 @@ export default function Learn() {
 
     const user = getCurrentUser();
     if (user && content) {
-      await markAttempt(user.uid, content.id);
+      try {
+        await markAttempt(user.uid, content.id);
+      } catch {
+        // Non-fatal — user already sees translations
+      }
     }
   };
 
   const handleSubmitContribution = async () => {
     if (!contribText.trim()) {
-      setError('Please enter your expression');
+      setActionError('Please enter your expression');
       return;
     }
 
     const user = getCurrentUser();
     if (!user) {
-      setError('Not signed in');
+      setActionError('Not signed in');
       return;
     }
 
     setSubmitting(true);
-    setError(null);
+    setActionError(null);
     Keyboard.dismiss();
 
     const result = await submitContribution(user.uid, {
@@ -170,7 +189,7 @@ export default function Learn() {
       setContribText('');
       setContribNote('');
     } else {
-      setError(result.error);
+      setActionError(result.error || 'Could not submit. Please try again.');
     }
   };
 
@@ -178,7 +197,13 @@ export default function Learn() {
     const user = getCurrentUser();
     if (!user || !content) return;
 
-    await markCompleted(user.uid, content.id);
+    setActionError(null);
+
+    try {
+      await markCompleted(user.uid, content.id);
+    } catch {
+      // Non-fatal — continue to next
+    }
 
     const lessonRes = await getDemoLesson(content.languageId, 10);
     if (!lessonRes.ok) {
@@ -200,7 +225,7 @@ export default function Learn() {
   };
 
   // ─────────────────────────────────────────────
-  // RENDER
+  // RENDER — LOADING
   // ─────────────────────────────────────────────
 
   if (loading) {
@@ -213,18 +238,37 @@ export default function Learn() {
     );
   }
 
-  if (error && !content) {
+  // ─────────────────────────────────────────────
+  // RENDER — FATAL LOAD ERROR
+  // ─────────────────────────────────────────────
+
+  if (loadError) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.center}>
-          <Text style={styles.errorText}>{String(error)}</Text>
-          <Pressable style={styles.btnSecondary} onPress={handleBack}>
-            <Text style={styles.btnSecondaryText}>Back to Home</Text>
-          </Pressable>
+          <View style={styles.errorCard}>
+            <Text style={styles.errorCardEmoji}>📡</Text>
+            <Text style={styles.errorCardTitle}>
+              Couldn't load this card
+            </Text>
+            <Text style={styles.errorCardText}>
+              Check your connection and try again.
+            </Text>
+            <Pressable style={styles.retryBtn} onPress={handleRetryLoad}>
+              <Text style={styles.retryText}>Retry</Text>
+            </Pressable>
+            <Pressable onPress={handleBack} hitSlop={12}>
+              <Text style={styles.backToHomeText}>Back to Home</Text>
+            </Pressable>
+          </View>
         </View>
       </SafeAreaView>
     );
   }
+
+  // ─────────────────────────────────────────────
+  // RENDER — NORMAL
+  // ─────────────────────────────────────────────
 
   return (
     <SafeAreaView style={styles.container}>
@@ -270,10 +314,7 @@ export default function Learn() {
                     <View style={styles.translationHeader}>
                       <Text style={styles.translationText}>{t.text}</Text>
                       <View
-                        style={[
-                          styles.badge,
-                          { borderColor: badge.color },
-                        ]}
+                        style={[styles.badge, { borderColor: badge.color }]}
                       >
                         <Text
                           style={[styles.badgeText, { color: badge.color }]}
@@ -335,7 +376,10 @@ export default function Learn() {
                   placeholder={`How would you say "${content?.prompt}"?`}
                   placeholderTextColor={Colors.textMuted}
                   value={contribText}
-                  onChangeText={setContribText}
+                  onChangeText={(v) => {
+                    setContribText(v);
+                    if (actionError) setActionError(null);
+                  }}
                   autoCapitalize="none"
                   editable={!submitting}
                 />
@@ -369,6 +413,7 @@ export default function Learn() {
                     setShowContribute(false);
                     setContribText('');
                     setContribNote('');
+                    setActionError(null);
                   }}
                   hitSlop={12}
                 >
@@ -387,10 +432,10 @@ export default function Learn() {
               </View>
             )}
 
-            {/* Error */}
-            {error && (
+            {/* Action error (non-fatal — inline) */}
+            {actionError && (
               <View style={styles.errorBox}>
-                <Text style={styles.errorText}>{String(error)}</Text>
+                <Text style={styles.errorText}>{String(actionError)}</Text>
               </View>
             )}
 
@@ -415,7 +460,6 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    gap: Spacing.lg,
     padding: Spacing.xl,
   },
   content: {
@@ -552,15 +596,6 @@ const styles = StyleSheet.create({
   },
   btnDisabled: { opacity: 0.6 },
   btnPrimaryText: { ...Typography.bodyBold, color: Colors.text },
-  btnSecondary: {
-    paddingVertical: Spacing.lg,
-    paddingHorizontal: Spacing.xl,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: Colors.borderLight,
-    marginTop: Spacing.lg,
-  },
-  btnSecondaryText: { ...Typography.bodyBold, color: Colors.text },
   btnNext: {
     backgroundColor: Colors.primary,
     paddingVertical: Spacing.lg,
@@ -596,7 +631,50 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
   },
 
-  // Error
+  // Fatal error card (centered, like Home)
+  errorCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.xl,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+    width: '100%',
+    maxWidth: 340,
+  },
+  errorCardEmoji: { fontSize: 40, marginBottom: Spacing.md },
+  errorCardTitle: {
+    ...Typography.h3,
+    color: Colors.text,
+    marginBottom: Spacing.xs,
+    textAlign: 'center',
+  },
+  errorCardText: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: Spacing.lg,
+  },
+  retryBtn: {
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.xxl,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    minWidth: 120,
+    alignItems: 'center',
+  },
+  retryText: {
+    ...Typography.bodyBold,
+    color: Colors.primaryLight,
+  },
+  backToHomeText: {
+    ...Typography.caption,
+    color: Colors.textMuted,
+    marginTop: Spacing.md,
+  },
+
+  // Inline action error (non-fatal)
   errorBox: {
     marginTop: Spacing.lg,
     padding: Spacing.md,
