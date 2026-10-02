@@ -7,8 +7,8 @@
 //   3. Progress — X of Y completed
 //   4. Contribute — proper card section
 //
-// Progress is naturally isolated per language because content IDs
-// include the language code (zu_greeting_hello vs st_greeting_hello).
+// Also self-heals the `onboarded: true` flag on the user doc — makes
+// onboarding truly one-time even if local AsyncStorage gets wiped.
 
 import { useState, useEffect, useCallback } from 'react';
 import {
@@ -21,6 +21,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
+import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { db } from '../../services/firebase';
 import { Colors, Spacing, Radius, Typography } from '../../theme';
 import { getActiveLanguageId, getLanguage } from '../../services/languages';
 import { getDemoLesson } from '../../services/content';
@@ -34,7 +36,7 @@ export default function Home() {
   const [language, setLanguage] = useState(null);
   const [nextItem, setNextItem] = useState(null);
   const [allComplete, setAllComplete] = useState(false);
-  const [noContent, setNoContent] = useState(false); // NEW — content fetch failed / empty
+  const [noContent, setNoContent] = useState(false);
   const [progress, setProgress] = useState({ seen: 0, completed: 0, total: 0 });
   const [error, setError] = useState(null);
 
@@ -47,6 +49,22 @@ export default function Home() {
       setError('Not signed in');
       setLoading(false);
       return;
+    }
+
+    // Self-healing: ensure `onboarded: true` on the user doc.
+    // This makes onboarding truly persistent even if the local AsyncStorage
+    // cache gets wiped (which can happen in Expo Go dev on Android).
+    try {
+      const userRef = doc(db, 'users', user.uid);
+      const userSnap = await getDoc(userRef);
+      if (userSnap.exists()) {
+        const data = userSnap.data();
+        if (data.onboarded !== true) {
+          await updateDoc(userRef, { onboarded: true });
+        }
+      }
+    } catch {
+      // Non-fatal — Home still loads even if this write fails
     }
 
     // 1. Active language
@@ -67,7 +85,6 @@ export default function Home() {
     // 2. Demo lesson (first 10 items)
     const contentRes = await getDemoLesson(activeRes.languageId, 10);
     if (!contentRes.ok) {
-      // Content fetch FAILED (network, rules, etc.) — show error, don't say "complete"
       setError('Could not load lesson content');
       setNoContent(true);
       setLoading(false);
@@ -76,7 +93,6 @@ export default function Home() {
 
     const items = contentRes.data || [];
 
-    // Empty content is a special case — NOT "all complete"
     if (items.length === 0) {
       setNoContent(true);
       setNextItem(null);
@@ -94,19 +110,17 @@ export default function Home() {
       setProgress(progressRes.data);
     }
 
-    // 4. First incomplete item — the "Continue learning" card
+    // 4. First incomplete item
     const nextRes = await getNextIncompleteItem(user.uid, items);
     if (nextRes.ok) {
       if (nextRes.next) {
         setNextItem(nextRes.next);
         setAllComplete(false);
       } else {
-        // All items have been marked completed
         setNextItem(null);
         setAllComplete(true);
       }
     } else {
-      // Fallback — if progress lookup failed, just show the first item
       setNextItem(items[0] || null);
       setAllComplete(false);
     }
@@ -114,12 +128,10 @@ export default function Home() {
     setLoading(false);
   }, [router]);
 
-  // Initial load
   useEffect(() => {
     load();
   }, [load]);
 
-  // Reload when screen comes back into focus (e.g. returning from Learn)
   useFocusEffect(
     useCallback(() => {
       load();
@@ -127,9 +139,6 @@ export default function Home() {
   );
 
   const handleSwitchLanguage = () => {
-    // Use a timestamp so every tap generates a fresh route.
-    // Without this, Expo Router treats repeated "?forceSwitch=1" as the same
-    // route and skips navigation after the first switch.
     const stamp = Date.now();
     router.replace(`/(tabs)?forceSwitch=1&t=${stamp}`);
   };
@@ -199,7 +208,6 @@ export default function Home() {
         <Text style={styles.sectionLabel}>CONTINUE LEARNING</Text>
 
         {noContent ? (
-          // Content fetch failed OR empty — NOT "all complete"
           <View style={styles.errorCard}>
             <Text style={styles.errorCardEmoji}>📡</Text>
             <Text style={styles.errorCardTitle}>
@@ -298,7 +306,6 @@ export default function Home() {
           </View>
         </Pressable>
 
-        {/* Error */}
         {error && (
           <View style={styles.errorBox}>
             <Text style={styles.errorText}>{String(error)}</Text>
@@ -322,7 +329,6 @@ const styles = StyleSheet.create({
   loadingText: { ...Typography.caption, color: Colors.textSecondary },
   content: { paddingHorizontal: Spacing.xl, paddingVertical: Spacing.xxl },
 
-  // Header
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -363,7 +369,6 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
   },
 
-  // Section label
   sectionLabel: {
     ...Typography.label,
     color: Colors.textSecondary,
@@ -371,7 +376,6 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.md,
   },
 
-  // Continue card
   continueCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -407,7 +411,6 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
 
-  // Complete card
   completeCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -428,7 +431,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 
-  // Error card — no content available
   errorCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -462,7 +464,6 @@ const styles = StyleSheet.create({
     color: Colors.primaryLight,
   },
 
-  // Empty
   emptyCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -473,7 +474,6 @@ const styles = StyleSheet.create({
   },
   emptyText: { ...Typography.caption, color: Colors.textSecondary },
 
-  // Progress
   progressCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -508,7 +508,6 @@ const styles = StyleSheet.create({
   },
   progressDetail: { ...Typography.tiny, color: Colors.textMuted },
 
-  // Contribute
   contributeCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -528,7 +527,6 @@ const styles = StyleSheet.create({
   },
   contributeText: { ...Typography.caption, color: Colors.textSecondary },
 
-  // Error
   errorBox: {
     marginTop: Spacing.lg,
     padding: Spacing.md,

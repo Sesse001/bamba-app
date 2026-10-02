@@ -24,12 +24,9 @@ import { auth, db } from './firebase';
 /**
  * Sign in as a guest. Creates a new anonymous Firebase user if none exists,
  * or returns the existing signed-in user if one is already active.
- *
- * @returns {Promise<{ ok: boolean, user?: object, error?: string }>}
  */
 export async function signInAsGuest() {
   try {
-    // If already signed in (guest OR real), don't create another
     if (auth.currentUser) {
       return { ok: true, user: auth.currentUser };
     }
@@ -38,17 +35,10 @@ export async function signInAsGuest() {
     const user = credential.user;
 
     // Force the auth token to be ready BEFORE Firestore writes.
-    // Without this, Firestore sometimes hangs on the first write after
-    // sign-in because the token isn't fully propagated yet.
     try {
       await user.getIdToken(true);
-    } catch {
-      // Token fetch failed — continue anyway; the write below will error
-      // with a clear message if the token truly isn't ready.
-    }
+    } catch {}
 
-    // Create the user profile doc in Firestore.
-    // Wrapped in a timeout so we never hang forever if Firestore is slow.
     await Promise.race([
       ensureUserProfile(user, { isGuest: true }),
       new Promise((_, reject) =>
@@ -73,13 +63,7 @@ export async function signInAsGuest() {
 /**
  * Sign up with email/password.
  * - If current user is anonymous: UPGRADES the anonymous account via linkWithCredential.
- *   Same UID, all contributions/progress preserved.
  * - If no user signed in: creates a fresh account.
- *
- * @param {string} email
- * @param {string} password
- * @param {string} displayName
- * @returns {Promise<{ ok: boolean, user?: object, upgraded?: boolean, error?: string }>}
  */
 export async function signUpWithEmail(email, password, displayName) {
   try {
@@ -91,7 +75,6 @@ export async function signUpWithEmail(email, password, displayName) {
       const result = await linkWithCredential(currentUser, credential);
       const upgradedUser = result.user;
 
-      // Force fresh token before Firestore write
       try {
         await upgradedUser.getIdToken(true);
       } catch {}
@@ -127,7 +110,6 @@ export async function signUpWithEmail(email, password, displayName) {
     );
     const newUser = credential.user;
 
-    // Force fresh token before Firestore write
     try {
       await newUser.getIdToken(true);
     } catch {}
@@ -159,10 +141,6 @@ export async function signUpWithEmail(email, password, displayName) {
 
 /**
  * Sign in with an existing email/password account.
- *
- * @param {string} email
- * @param {string} password
- * @returns {Promise<{ ok: boolean, user?: object, error?: string }>}
  */
 export async function signInWithEmail(email, password) {
   try {
@@ -177,31 +155,18 @@ export async function signInWithEmail(email, password) {
 // SESSION
 // ─────────────────────────────────────────────────────────────
 
-/**
- * Subscribe to auth state changes.
- * Callback receives (user | null). Returns unsubscribe function.
- */
 export function onAuthChange(callback) {
   return onAuthStateChanged(auth, callback);
 }
 
-/**
- * Returns the currently signed-in user (or null).
- */
 export function getCurrentUser() {
   return auth.currentUser;
 }
 
-/**
- * True if the current user is an anonymous guest.
- */
 export function isGuest() {
   return auth.currentUser?.isAnonymous ?? false;
 }
 
-/**
- * Sign out the current user (guest or real).
- */
 export async function signOutUser() {
   try {
     await signOut(auth);
@@ -217,8 +182,10 @@ export async function signOutUser() {
 
 /**
  * Ensures a `users/{uid}` doc exists in Firestore.
- * If it already exists, only merges non-destructive fields (so we don't
- * overwrite progress/flags set elsewhere).
+ *
+ * Sets `onboarded: true` on creation — user docs are only created after
+ * a user has passed through onboarding, so this is the durable Firestore
+ * source of truth for onboarding state.
  */
 async function ensureUserProfile(user, extra = {}) {
   const ref = doc(db, 'users', user.uid);
@@ -233,11 +200,11 @@ async function ensureUserProfile(user, extra = {}) {
       displayName: extra.displayName ?? null,
       email: extra.email ?? null,
       upgradedFromGuest: extra.upgradedFromGuest ?? false,
+      onboarded: true, // user doc is created after onboarding completes
       languages: [],
       role: 'learner',
     });
   } else {
-    // Merge-only update — don't clobber existing data
     await setDoc(
       ref,
       {

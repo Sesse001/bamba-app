@@ -4,8 +4,13 @@
 //   2. Auth flow (not signed in)
 //   3. Tabs (signed in)
 //
-// Handles auto-login: if a user is already signed in when they launch,
-// we skip Welcome entirely and go straight to tabs.
+// Onboarding persistence uses TWO sources:
+//   1. AsyncStorage  — fast, local
+//   2. Firestore     — durable, cloud (users/{uid}.onboarded)
+//
+// Why two sources: AsyncStorage on Expo Go / Android dev builds is not
+// always reliable across full app restarts. The Firestore flag acts as a
+// backup — if the local flag is lost, we recover it from the user doc.
 //
 // Special case: signed-in GUESTS can reach (auth)/email to UPGRADE their
 // account via linkWithCredential.
@@ -20,8 +25,10 @@ import {
 } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { doc, getDoc } from 'firebase/firestore';
 import { Colors } from '../theme';
 import { onAuthChange } from '../services/auth';
+import { db } from '../services/firebase';
 
 const ONBOARDED_KEY = 'bamba.onboarded';
 
@@ -34,7 +41,6 @@ export default function RootLayout() {
   const segments = useSegments();
   const navState = useRootNavigationState();
 
-  // Guard — only one redirect allowed at a time
   const redirecting = useRef(false);
 
   // Subscribe to Firebase auth state changes
@@ -46,7 +52,7 @@ export default function RootLayout() {
     return unsubscribe;
   }, []);
 
-  // Initial check of the onboarding flag
+  // Initial AsyncStorage check (fast path)
   useEffect(() => {
     (async () => {
       try {
@@ -58,7 +64,7 @@ export default function RootLayout() {
     })();
   }, []);
 
-  // Routing effect — runs whenever segments/auth/onboarding change
+  // Routing effect
   useEffect(() => {
     if (initializing || hasOnboarded === null) return;
     if (!navState?.key) return;
@@ -67,20 +73,32 @@ export default function RootLayout() {
     let cancelled = false;
 
     (async () => {
-      // Re-read the flag fresh on every segment change.
-      // This avoids stale state when onboarding has just set it.
+      // Determine "onboarded" from multiple sources:
+      //   1. AsyncStorage (fast) — if 'true', we trust it
+      //   2. Firestore user doc — if storage says false/missing but user
+      //      exists and doc says onboarded: true, recover.
       let onboarded = hasOnboarded;
-      try {
-        const flag = await AsyncStorage.getItem(ONBOARDED_KEY);
-        onboarded = flag === 'true';
-        if (onboarded !== hasOnboarded) {
-          setHasOnboarded(onboarded);
+
+      if (!onboarded && user) {
+        try {
+          const userRef = doc(db, 'users', user.uid);
+          const userSnap = await getDoc(userRef);
+          if (userSnap.exists() && userSnap.data().onboarded === true) {
+            onboarded = true;
+            try {
+              await AsyncStorage.setItem(ONBOARDED_KEY, 'true');
+            } catch {}
+          }
+        } catch {
+          // Firestore check failed — fall through with current value
         }
-      } catch {
-        // fall through with whatever we had
       }
 
       if (cancelled) return;
+
+      if (onboarded !== hasOnboarded) {
+        setHasOnboarded(onboarded);
+      }
 
       const inAuthGroup = segments[0] === '(auth)';
       const onOnboarding = inAuthGroup && segments[1] === 'onboarding';
@@ -104,8 +122,7 @@ export default function RootLayout() {
         return;
       }
 
-      // 2. Onboarding is handling its own exit.
-      //    Don't interfere — it will navigate to welcome or tabs itself.
+      // 2. Onboarding is handling its own exit
       if (onOnboarding) {
         return;
       }
@@ -118,11 +135,10 @@ export default function RootLayout() {
         return;
       }
 
-      // 4. Guest on email screen is UPGRADING — allow, don't touch
+      // 4. Guest on email screen is UPGRADING — allow
       if (isGuest && onEmailScreen) return;
 
       // 5. Signed-in user stuck on Welcome → tabs
-      //    (onboarding is already excluded by rule 2 above)
       if (user && onWelcome) {
         safeReplace('/(tabs)');
         return;
