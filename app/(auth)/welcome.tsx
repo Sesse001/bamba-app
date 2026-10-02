@@ -10,6 +10,7 @@ import {
   StyleSheet,
   ActivityIndicator,
   ScrollView,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -41,7 +42,11 @@ export default function Welcome() {
       >
         {/* Logo / Brand */}
         <View style={styles.brandBlock}>
-          <Text style={styles.logo}>🛡️</Text>
+          <Image
+            source={require('../../assets/images/logo.png')}
+            style={styles.logoImage}
+            resizeMode="contain"
+          />
           <Text style={styles.appName}>Bamba</Text>
           <Text style={styles.tagline}>
             Learn South African languages.{'\n'}Contribute to their future.
@@ -104,8 +109,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: Spacing.huge,
   },
-  logo: {
-    fontSize: 72,
+  logoImage: {
+    width: 120,
+    height: 120,
     marginBottom: Spacing.lg,
   },
   appName: {
