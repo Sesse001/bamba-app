@@ -1,8 +1,8 @@
 // app/(auth)/email.tsx
 // Email sign-up / sign-in with mode toggle.
-// Uses KeyboardAwareScrollView to handle keyboard + scrolling reliably on Android + iOS.
+// If current user is anonymous guest, sign-up UPGRADES them (same UID, preserves data).
 
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 import {
   View,
   Text,
@@ -20,12 +20,12 @@ import { signUpWithEmail, signInWithEmail } from '../../services/auth';
 
 export default function EmailAuth() {
   const router = useRouter();
-  const scrollRef = useRef(null);
 
-  const [mode, setMode] = useState('signup'); // 'signup' | 'signin'
+  const [mode, setMode] = useState('signup');
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -56,7 +56,7 @@ export default function EmailAuth() {
     setLoading(false);
 
     if (result.ok) {
-      router.replace('/(tabs)');
+      router.replace('/(tabs)/home');
     } else {
       setError(result.error);
     }
@@ -70,16 +70,11 @@ export default function EmailAuth() {
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAwareScrollView
-        ref={scrollRef}
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         enableOnAndroid={true}
-        enableAutomaticScroll={true}
-        extraHeight={Platform.OS === 'android' ? 120 : 0}
-        extraScrollHeight={Platform.OS === 'android' ? 20 : 0}
-        keyboardOpeningTime={0}
-        scrollEnabled={true}
+        extraHeight={120}
       >
         {/* Back */}
         <Pressable
@@ -131,16 +126,26 @@ export default function EmailAuth() {
           />
 
           <Text style={styles.label}>PASSWORD</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="At least 6 characters"
-            placeholderTextColor={Colors.textMuted}
-            value={password}
-            onChangeText={setPassword}
-            secureTextEntry
-            autoCapitalize="none"
-            editable={!loading}
-          />
+          <View style={styles.passwordWrap}>
+            <TextInput
+              style={styles.passwordInput}
+              placeholder="At least 6 characters"
+              placeholderTextColor={Colors.textMuted}
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry={!showPassword}
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={!loading}
+            />
+            <Pressable
+              style={styles.eyeBtn}
+              onPress={() => setShowPassword((s) => !s)}
+              hitSlop={12}
+            >
+              <Text style={styles.eyeText}>{showPassword ? '🙈' : '👁️'}</Text>
+            </Pressable>
+          </View>
         </View>
 
         {/* Error */}
@@ -231,6 +236,31 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.borderLight,
   },
+
+  // Password field with eye toggle
+  passwordWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+    paddingRight: Spacing.sm,
+  },
+  passwordInput: {
+    flex: 1,
+    padding: Spacing.lg,
+    color: Colors.text,
+    fontSize: 16,
+  },
+  eyeBtn: {
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.sm,
+  },
+  eyeText: {
+    fontSize: 20,
+  },
+
   errorBox: {
     marginTop: Spacing.md,
     marginBottom: Spacing.md,
