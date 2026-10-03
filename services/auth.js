@@ -3,6 +3,12 @@
 // Pattern: guest-first (anonymous Firebase user), upgradeable to email/password
 // The upgrade uses linkWithCredential so the SAME UID is preserved across upgrade.
 // Result: guest progress + contributions survive account creation.
+//
+// Performance note:
+//   signInAsGuest, signUpWithEmail, and signInWithEmail return as soon as
+//   Firebase Auth has completed. The Firestore user-profile write is done in
+//   the background (unawaited). Home's self-healing handles the rare case
+//   where the background write hasn't finished yet.
 
 import {
   signInAnonymously,
@@ -24,9 +30,12 @@ import { auth, db } from './firebase';
 /**
  * Sign in as a guest. Creates a new anonymous Firebase user if none exists,
  * or returns the existing signed-in user if one is already active.
+ *
+ * @returns {Promise<{ ok: boolean, user?: object, error?: string }>}
  */
 export async function signInAsGuest() {
   try {
+    // If already signed in (guest OR real), don't create another
     if (auth.currentUser) {
       return { ok: true, user: auth.currentUser };
     }
@@ -34,21 +43,10 @@ export async function signInAsGuest() {
     const credential = await signInAnonymously(auth);
     const user = credential.user;
 
-    // Force the auth token to be ready BEFORE Firestore writes.
-    try {
-      await user.getIdToken(true);
-    } catch {}
-
-    await Promise.race([
-      ensureUserProfile(user, { isGuest: true }),
-      new Promise((_, reject) =>
-        setTimeout(
-          () =>
-            reject(new Error('Profile setup timed out. Please try again.')),
-          10000
-        )
-      ),
-    ]);
+    // Fire-and-forget: ensure the user profile doc exists.
+    // We don't await — the user can proceed to Home immediately.
+    // If this fails, Home's self-heal will catch it.
+    ensureUserProfile(user, { isGuest: true }).catch(() => {});
 
     return { ok: true, user };
   } catch (error) {
@@ -63,7 +61,13 @@ export async function signInAsGuest() {
 /**
  * Sign up with email/password.
  * - If current user is anonymous: UPGRADES the anonymous account via linkWithCredential.
+ *   Same UID, all contributions/progress preserved.
  * - If no user signed in: creates a fresh account.
+ *
+ * @param {string} email
+ * @param {string} password
+ * @param {string} displayName
+ * @returns {Promise<{ ok: boolean, user?: object, upgraded?: boolean, error?: string }>}
  */
 export async function signUpWithEmail(email, password, displayName) {
   try {
@@ -75,29 +79,20 @@ export async function signUpWithEmail(email, password, displayName) {
       const result = await linkWithCredential(currentUser, credential);
       const upgradedUser = result.user;
 
-      try {
-        await upgradedUser.getIdToken(true);
-      } catch {}
-
+      // Set display name (fast, local — safe to await)
       if (displayName) {
-        await updateProfile(upgradedUser, { displayName });
+        try {
+          await updateProfile(upgradedUser, { displayName });
+        } catch {}
       }
 
-      await Promise.race([
-        ensureUserProfile(upgradedUser, {
-          isGuest: false,
-          displayName: displayName || null,
-          email,
-          upgradedFromGuest: true,
-        }),
-        new Promise((_, reject) =>
-          setTimeout(
-            () =>
-              reject(new Error('Profile setup timed out. Please try again.')),
-            10000
-          )
-        ),
-      ]);
+      // Fire-and-forget: write profile doc in background
+      ensureUserProfile(upgradedUser, {
+        isGuest: false,
+        displayName: displayName || null,
+        email,
+        upgradedFromGuest: true,
+      }).catch(() => {});
 
       return { ok: true, user: upgradedUser, upgraded: true };
     }
@@ -110,28 +105,19 @@ export async function signUpWithEmail(email, password, displayName) {
     );
     const newUser = credential.user;
 
-    try {
-      await newUser.getIdToken(true);
-    } catch {}
-
+    // Set display name (fast, local — safe to await)
     if (displayName) {
-      await updateProfile(newUser, { displayName });
+      try {
+        await updateProfile(newUser, { displayName });
+      } catch {}
     }
 
-    await Promise.race([
-      ensureUserProfile(newUser, {
-        isGuest: false,
-        displayName: displayName || null,
-        email,
-      }),
-      new Promise((_, reject) =>
-        setTimeout(
-          () =>
-            reject(new Error('Profile setup timed out. Please try again.')),
-          10000
-        )
-      ),
-    ]);
+    // Fire-and-forget: write profile doc in background
+    ensureUserProfile(newUser, {
+      isGuest: false,
+      displayName: displayName || null,
+      email,
+    }).catch(() => {});
 
     return { ok: true, user: newUser, upgraded: false };
   } catch (error) {
@@ -141,11 +127,21 @@ export async function signUpWithEmail(email, password, displayName) {
 
 /**
  * Sign in with an existing email/password account.
+ * Fast — no Firestore write required.
+ *
+ * @param {string} email
+ * @param {string} password
+ * @returns {Promise<{ ok: boolean, user?: object, error?: string }>}
  */
 export async function signInWithEmail(email, password) {
   try {
     const credential = await signInWithEmailAndPassword(auth, email, password);
-    return { ok: true, user: credential.user };
+    const user = credential.user;
+
+    // Fire-and-forget: update lastSeenAt + ensure doc exists.
+    ensureUserProfile(user, {}).catch(() => {});
+
+    return { ok: true, user };
   } catch (error) {
     return { ok: false, error: mapAuthError(error) };
   }
@@ -182,10 +178,10 @@ export async function signOutUser() {
 
 /**
  * Ensures a `users/{uid}` doc exists in Firestore.
+ * If it already exists, only merges non-destructive fields.
  *
- * Sets `onboarded: true` on creation — user docs are only created after
- * a user has passed through onboarding, so this is the durable Firestore
- * source of truth for onboarding state.
+ * Now called fire-and-forget from sign-in flows — errors are swallowed
+ * by the caller. Home's self-heal provides a safety net.
  */
 async function ensureUserProfile(user, extra = {}) {
   const ref = doc(db, 'users', user.uid);
