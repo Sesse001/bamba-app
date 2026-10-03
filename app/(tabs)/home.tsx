@@ -11,6 +11,10 @@
 //   - Language lookups use AsyncStorage cache when possible
 //   - Content + progress queries run in parallel (Promise.all)
 //   - No "0 of 0" flash — shows skeleton until data arrives
+//
+// Notification self-heal:
+//   - On every Home load, if user has reminder enabled, re-schedule
+//     the daily notification (survives app/device restarts)
 
 import { useState, useEffect, useCallback } from 'react';
 import {
@@ -30,6 +34,7 @@ import { getActiveLanguageId, getLanguage } from '../../services/languages';
 import { getDemoLesson } from '../../services/content';
 import { getProgressSummary, getNextIncompleteItem } from '../../services/progress';
 import { getCurrentUser } from '../../services/auth';
+import { ensureReminderScheduled } from '../../services/notifications';
 
 export default function Home() {
   const router = useRouter();
@@ -79,6 +84,14 @@ export default function Home() {
     }
     setLanguage(langRes.data);
 
+    // Re-schedule reminder if user has it enabled.
+    // Handles app reinstalls or device restarts where scheduled
+    // notifications may have been cleared.
+    // Non-fatal — fire-and-forget, Home loads regardless.
+    try {
+      ensureReminderScheduled(user.uid, langRes.data.name).catch(() => {});
+    } catch {}
+
     // 2. Fetch content FIRST (needed for progress query)
     const contentRes = await getDemoLesson(activeRes.languageId, 10);
     if (!contentRes.ok) {
@@ -101,10 +114,7 @@ export default function Home() {
 
     const contentIds = items.map((i) => i.id);
 
-    // 3. Run progress summary + next incomplete in PARALLEL.
-    //    Both queries touch the same progress subcollection, so they can
-    //    share a single fetch. But we run them together via Promise.all
-    //    for simplicity and to let Firebase handle the batching.
+    // 3. Run progress summary + next incomplete in PARALLEL
     const [progressRes, nextRes] = await Promise.all([
       getProgressSummary(user.uid, contentIds),
       getNextIncompleteItem(user.uid, items),
@@ -123,7 +133,6 @@ export default function Home() {
         setAllComplete(true);
       }
     } else {
-      // Fallback — show first item if progress lookup failed
       setNextItem(items[0] || null);
       setAllComplete(false);
     }
@@ -155,7 +164,7 @@ export default function Home() {
   };
 
   // ─────────────────────────────────────────────
-  // LOADING SKELETON (matches final layout)
+  // LOADING SKELETON
   // ─────────────────────────────────────────────
   if (loading) {
     return (
@@ -164,37 +173,80 @@ export default function Home() {
           contentContainerStyle={styles.content}
           showsVerticalScrollIndicator={false}
         >
-          {/* Skeleton header */}
           <View style={styles.headerRow}>
             <View style={styles.headerLeft}>
               <View style={[styles.skeletonBar, { width: 70, height: 10 }]} />
               <View style={styles.langRow}>
-                <View style={[styles.skeletonBar, { width: 40, height: 40, borderRadius: 8 }]} />
+                <View
+                  style={[
+                    styles.skeletonBar,
+                    { width: 40, height: 40, borderRadius: 8 },
+                  ]}
+                />
                 <View style={{ gap: 8 }}>
-                  <View style={[styles.skeletonBar, { width: 120, height: 22 }]} />
-                  <View style={[styles.skeletonBar, { width: 180, height: 12 }]} />
+                  <View
+                    style={[styles.skeletonBar, { width: 120, height: 22 }]}
+                  />
+                  <View
+                    style={[styles.skeletonBar, { width: 180, height: 12 }]}
+                  />
                 </View>
               </View>
             </View>
           </View>
 
-          {/* Skeleton section label */}
-          <View style={[styles.skeletonBar, { width: 140, height: 10, marginTop: Spacing.xxl, marginBottom: Spacing.md }]} />
+          <View
+            style={[
+              styles.skeletonBar,
+              {
+                width: 140,
+                height: 10,
+                marginTop: Spacing.xxl,
+                marginBottom: Spacing.md,
+              },
+            ]}
+          />
 
-          {/* Skeleton continue card */}
           <View style={styles.skeletonCard}>
-            <View style={[styles.skeletonBar, { width: '60%', height: 20 }]} />
-            <View style={[styles.skeletonBar, { width: '40%', height: 12, marginTop: 8 }]} />
+            <View
+              style={[styles.skeletonBar, { width: '60%', height: 20 }]}
+            />
+            <View
+              style={[
+                styles.skeletonBar,
+                { width: '40%', height: 12, marginTop: 8 },
+              ]}
+            />
           </View>
 
-          {/* Skeleton section label */}
-          <View style={[styles.skeletonBar, { width: 90, height: 10, marginTop: Spacing.xxl, marginBottom: Spacing.md }]} />
+          <View
+            style={[
+              styles.skeletonBar,
+              {
+                width: 90,
+                height: 10,
+                marginTop: Spacing.xxl,
+                marginBottom: Spacing.md,
+              },
+            ]}
+          />
 
-          {/* Skeleton progress card */}
           <View style={styles.skeletonCard}>
-            <View style={[styles.skeletonBar, { width: '50%', height: 32 }]} />
-            <View style={[styles.skeletonBar, { width: '100%', height: 8, marginTop: 16 }]} />
-            <View style={[styles.skeletonBar, { width: '40%', height: 10, marginTop: 12 }]} />
+            <View
+              style={[styles.skeletonBar, { width: '50%', height: 32 }]}
+            />
+            <View
+              style={[
+                styles.skeletonBar,
+                { width: '100%', height: 8, marginTop: 16 },
+              ]}
+            />
+            <View
+              style={[
+                styles.skeletonBar,
+                { width: '40%', height: 10, marginTop: 12 },
+              ]}
+            />
           </View>
 
           <Text style={styles.skeletonHint}>Loading your language…</Text>
@@ -203,6 +255,9 @@ export default function Home() {
     );
   }
 
+  // ─────────────────────────────────────────────
+  // NORMAL RENDER
+  // ─────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView
