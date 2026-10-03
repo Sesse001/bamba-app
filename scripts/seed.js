@@ -5,23 +5,41 @@
 //
 // Run with:   node scripts/seed.js
 //
-// Uses the Firebase client SDK (same config as the app).
-// Firestore rules currently allow open writes during dev — safe for this script.
+// Uses the Firebase Admin SDK, which bypasses Firestore Security Rules.
+// This means the client app can keep strict rules (write: false on content),
+// while trusted seeding still works.
+//
+// Requires: serviceAccountKey.json in the project root.
+// Get it from Firebase Console → Project Settings → Service Accounts → Generate new private key.
+// NEVER commit serviceAccountKey.json to git.
 
-const { initializeApp } = require('firebase/app');
-const { getFirestore, doc, setDoc, serverTimestamp } = require('firebase/firestore');
+const admin = require('firebase-admin');
+const path = require('path');
 
-const firebaseConfig = {
-  apiKey: "AIzaSyDtK1tggcJkQcLQUJ7fANsSBbRhHzw3U28",
-  authDomain: "linguacore-45ee6.firebaseapp.com",
-  projectId: "linguacore-45ee6",
-  storageBucket: "linguacore-45ee6.firebasestorage.app",
-  messagingSenderId: "1074135238590",
-  appId: "1:1074135238590:web:5bac09ccc5df75891a1bef",
-};
+// ─────────────────────────────────────────────────────────────
+// INIT
+// ─────────────────────────────────────────────────────────────
 
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
+const serviceAccountPath = path.join(__dirname, '..', 'serviceAccountKey.json');
+
+let serviceAccount;
+try {
+  serviceAccount = require(serviceAccountPath);
+} catch (error) {
+  console.error('\n❌ Could not find serviceAccountKey.json');
+  console.error('   Expected at:', serviceAccountPath);
+  console.error('\n   Download it from:');
+  console.error('   Firebase Console → Project Settings → Service Accounts');
+  console.error('   → Generate new private key');
+  console.error('\n   Then save it as serviceAccountKey.json in the project root.\n');
+  process.exit(1);
+}
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+
+const db = admin.firestore();
 
 // ─────────────────────────────────────────────────────────────
 // LANGUAGE SEED DATA
@@ -69,12 +87,6 @@ const LANGUAGES = [
 // ─────────────────────────────────────────────────────────────
 // LEARNING CONTENT SEED DATA
 // ─────────────────────────────────────────────────────────────
-//
-// Each item is a prompt with 1–3 curated translations.
-// IDs are deterministic: {lang}_{type}_{slug}
-//
-// IMPORTANT: all items are isDemo=true — clearly labeled as prototype content,
-// not research-validated language data.
 
 const CONTENT = [
   // ─── isiZulu ────────────────────────────────────────────────
@@ -485,12 +497,15 @@ async function seedLanguages() {
   console.log(`\n📚 Seeding ${LANGUAGES.length} languages...`);
   for (const lang of LANGUAGES) {
     const { id, ...data } = lang;
-    const ref = doc(db, 'languages', id);
-    await setDoc(ref, {
-      ...data,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    }, { merge: true });
+    const ref = db.collection('languages').doc(id);
+    await ref.set(
+      {
+        ...data,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
     console.log(`   ✅ ${id} — ${data.name}`);
   }
 }
@@ -504,26 +519,32 @@ async function seedContent() {
     const { id, translations, ...contentData } = item;
 
     // Parent doc
-    const contentRef = doc(db, 'learning_content', id);
-    await setDoc(contentRef, {
-      ...contentData,
-      isDemo: true,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    }, { merge: true });
+    const contentRef = db.collection('learning_content').doc(id);
+    await contentRef.set(
+      {
+        ...contentData,
+        isDemo: true,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
     contentCount++;
 
     // Translations subcollection
     for (const t of translations) {
       const { id: tId, ...tData } = t;
-      const tRef = doc(db, 'learning_content', id, 'translations', tId);
-      await setDoc(tRef, {
-        ...tData,
-        isDemo: true,
-        submittedBy: null,
-        reviewedBy: null,
-        createdAt: serverTimestamp(),
-      }, { merge: true });
+      const tRef = contentRef.collection('translations').doc(tId);
+      await tRef.set(
+        {
+          ...tData,
+          isDemo: true,
+          submittedBy: null,
+          reviewedBy: null,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
       translationCount++;
     }
   }
@@ -533,9 +554,10 @@ async function seedContent() {
 }
 
 async function main() {
-  console.log('🌱 Bamba V2 — Seed script');
+  console.log('🌱 Bamba V2 — Seed script (Admin SDK)');
   console.log('═══════════════════════════════════════════');
   console.log('Idempotent: safe to re-run. Deterministic IDs.');
+  console.log('Bypasses Firestore rules (Admin SDK).');
   console.log('═══════════════════════════════════════════');
 
   try {
@@ -545,10 +567,6 @@ async function main() {
     console.log('\n🎉 Seed complete.');
     console.log('\nVerify in Firebase Console:');
     console.log('  https://console.firebase.google.com/project/linguacore-45ee6/firestore/data');
-    console.log('\nExpected collections:');
-    console.log('  languages/                    (3 demo docs + 8 V1 catalogued)');
-    console.log('  learning_content/             (30 docs)');
-    console.log('  learning_content/*/translations  (33 docs)');
     process.exit(0);
   } catch (error) {
     console.error('\n❌ Seed failed:', error.message || error);

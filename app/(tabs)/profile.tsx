@@ -1,19 +1,15 @@
 // app/(tabs)/profile.tsx
 // Profile + sign out + preferences.
 //
-// Shows current account info, stats, preferences, and offers a sign-out flow.
+// Shows current account info, stats, and offers a sign-out flow.
 // If user is a guest, warns them BEFORE sign-out that their progress
 // and contributions are tied to a temporary account.
 //
-// Reminder preference:
-//   - Toggle "Daily reminder" on → request permission → save to Firestore
-//   - Toggle off → save to Firestore
-//   - If permission denied → toggle stays off, permissionDenied flag set
-//
-// Note: we do NOT call getPermissionStatus() on profile load — that would
-// eagerly import expo-notifications and emit a warning in Expo Go on every
-// visit. Permission status is checked only when the user interacts with the
-// toggle.
+// Daily reminder:
+//   - Toggle on → request permission → schedule local notification → save to Firestore
+//   - Toggle off → cancel notification → save to Firestore
+//   - Fixed time: 7:00 PM local. Time picker deferred.
+//   - Re-scheduled on every app launch (see Home self-heal)
 
 import { useState, useCallback } from 'react';
 import {
@@ -36,7 +32,10 @@ import {
   requestPermission,
   getReminderPreference,
   setReminderPreference,
+  scheduleDailyReminder,
+  cancelDailyReminder,
 } from '../../services/notifications';
+import { getActiveLanguageId, getLanguage } from '../../services/languages';
 
 export default function Profile() {
   const router = useRouter();
@@ -73,22 +72,17 @@ export default function Profile() {
     setDisplayName(current.displayName || '');
     setEmail(current.email || '');
 
-    // Contribution count is nice-to-have — don't fail the whole screen if it errors
+    // Contribution count — non-fatal
     try {
       const countRes = await getUserContributionCount(current.uid);
       if (countRes.ok) setContributionCount(countRes.count);
-    } catch {
-      // Leave count at 0
-    }
+    } catch {}
 
-    // Reminder preference only — no permission status check here
-    // (that would eagerly import expo-notifications and log a warning on every load)
+    // Reminder preference — read only, no permission status check here
     try {
       const prefRes = await getReminderPreference(current.uid);
       if (prefRes.ok) setReminderEnabled(prefRes.enabled);
-    } catch {
-      // Non-fatal — default to off
-    }
+    } catch {}
 
     setLoading(false);
   }, []);
@@ -134,15 +128,16 @@ export default function Profile() {
   };
 
   // ─────────────────────────────────────────────
-  // REMINDER TOGGLE
+  // REMINDER TOGGLE — schedule/cancel real notifications
   // ─────────────────────────────────────────────
   const handleReminderToggle = async (nextValue) => {
     if (reminderSaving || !user) return;
 
     setReminderSaving(true);
+    setPermissionDenied(false);
 
     if (nextValue) {
-      // Turning ON — need permission first
+      // Turning ON
       const permRes = await requestPermission();
 
       if (!permRes.ok || !permRes.granted) {
@@ -153,13 +148,31 @@ export default function Profile() {
         return;
       }
 
+      // Permission granted — determine language name for the notification body
+      let languageName = null;
+      try {
+        const activeRes = await getActiveLanguageId(user.uid);
+        if (activeRes.ok && activeRes.languageId) {
+          const langRes = await getLanguage(activeRes.languageId);
+          if (langRes.ok) languageName = langRes.data.name;
+        }
+      } catch {}
+
+      // Schedule the daily reminder
+      const schedRes = await scheduleDailyReminder(languageName);
+      if (!schedRes.ok) {
+        setReminderSaving(false);
+        return;
+      }
+
+      // Save preference to Firestore
       const saveRes = await setReminderPreference(user.uid, true);
       if (saveRes.ok) {
         setReminderEnabled(true);
-        setPermissionDenied(false);
       }
     } else {
-      // Turning OFF — just save
+      // Turning OFF
+      await cancelDailyReminder();
       const saveRes = await setReminderPreference(user.uid, false);
       if (saveRes.ok) {
         setReminderEnabled(false);
@@ -170,9 +183,7 @@ export default function Profile() {
   };
 
   const handleOpenSettings = () => {
-    Linking.openSettings().catch(() => {
-      // Fallback — some devices don't support openSettings
-    });
+    Linking.openSettings().catch(() => {});
   };
 
   // ─────────────────────────────────────────────
@@ -282,7 +293,7 @@ export default function Profile() {
             <View style={styles.prefBody}>
               <Text style={styles.prefTitle}>Daily reminder</Text>
               <Text style={styles.prefSubtitle}>
-                A gentle nudge to keep learning.
+                A gentle nudge at 7 PM to keep learning.
               </Text>
             </View>
 
@@ -302,7 +313,7 @@ export default function Profile() {
             )}
           </View>
 
-          {/* Permission denied notice — shown only after user taps toggle and is denied */}
+          {/* Permission denied notice */}
           {permissionDenied && (
             <Pressable
               style={styles.permDeniedBox}
