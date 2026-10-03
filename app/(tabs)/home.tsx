@@ -7,8 +7,10 @@
 //   3. Progress — X of Y completed
 //   4. Contribute — proper card section
 //
-// Also self-heals the `onboarded: true` flag on the user doc — makes
-// onboarding truly one-time even if local AsyncStorage gets wiped.
+// Performance:
+//   - Language lookups use AsyncStorage cache when possible
+//   - Content + progress queries run in parallel (Promise.all)
+//   - No "0 of 0" flash — shows skeleton until data arrives
 
 import { useState, useEffect, useCallback } from 'react';
 import {
@@ -51,23 +53,18 @@ export default function Home() {
       return;
     }
 
-    // Self-healing: ensure `onboarded: true` on the user doc.
-    // This makes onboarding truly persistent even if the local AsyncStorage
-    // cache gets wiped (which can happen in Expo Go dev on Android).
+    // Self-healing: ensure onboarded flag on user doc
     try {
       const userRef = doc(db, 'users', user.uid);
       const userSnap = await getDoc(userRef);
-      if (userSnap.exists()) {
-        const data = userSnap.data();
-        if (data.onboarded !== true) {
-          await updateDoc(userRef, { onboarded: true });
-        }
+      if (userSnap.exists() && userSnap.data().onboarded !== true) {
+        await updateDoc(userRef, { onboarded: true });
       }
     } catch {
-      // Non-fatal — Home still loads even if this write fails
+      // Non-fatal
     }
 
-    // 1. Active language
+    // 1. Active language (cache-first)
     const activeRes = await getActiveLanguageId(user.uid);
     if (!activeRes.ok || !activeRes.languageId) {
       router.replace('/(tabs)');
@@ -82,7 +79,7 @@ export default function Home() {
     }
     setLanguage(langRes.data);
 
-    // 2. Demo lesson (first 10 items)
+    // 2. Fetch content FIRST (needed for progress query)
     const contentRes = await getDemoLesson(activeRes.languageId, 10);
     if (!contentRes.ok) {
       setError('Could not load lesson content');
@@ -104,14 +101,19 @@ export default function Home() {
 
     const contentIds = items.map((i) => i.id);
 
-    // 3. Progress summary
-    const progressRes = await getProgressSummary(user.uid, contentIds);
+    // 3. Run progress summary + next incomplete in PARALLEL.
+    //    Both queries touch the same progress subcollection, so they can
+    //    share a single fetch. But we run them together via Promise.all
+    //    for simplicity and to let Firebase handle the batching.
+    const [progressRes, nextRes] = await Promise.all([
+      getProgressSummary(user.uid, contentIds),
+      getNextIncompleteItem(user.uid, items),
+    ]);
+
     if (progressRes.ok) {
       setProgress(progressRes.data);
     }
 
-    // 4. First incomplete item
-    const nextRes = await getNextIncompleteItem(user.uid, items);
     if (nextRes.ok) {
       if (nextRes.next) {
         setNextItem(nextRes.next);
@@ -121,6 +123,7 @@ export default function Home() {
         setAllComplete(true);
       }
     } else {
+      // Fallback — show first item if progress lookup failed
       setNextItem(items[0] || null);
       setAllComplete(false);
     }
@@ -151,13 +154,51 @@ export default function Home() {
     router.push('/(tabs)/profile');
   };
 
+  // ─────────────────────────────────────────────
+  // LOADING SKELETON (matches final layout)
+  // ─────────────────────────────────────────────
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
-        <View style={styles.center}>
-          <ActivityIndicator color={Colors.primary} size="large" />
-          <Text style={styles.loadingText}>Loading your language...</Text>
-        </View>
+        <ScrollView
+          contentContainerStyle={styles.content}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Skeleton header */}
+          <View style={styles.headerRow}>
+            <View style={styles.headerLeft}>
+              <View style={[styles.skeletonBar, { width: 70, height: 10 }]} />
+              <View style={styles.langRow}>
+                <View style={[styles.skeletonBar, { width: 40, height: 40, borderRadius: 8 }]} />
+                <View style={{ gap: 8 }}>
+                  <View style={[styles.skeletonBar, { width: 120, height: 22 }]} />
+                  <View style={[styles.skeletonBar, { width: 180, height: 12 }]} />
+                </View>
+              </View>
+            </View>
+          </View>
+
+          {/* Skeleton section label */}
+          <View style={[styles.skeletonBar, { width: 140, height: 10, marginTop: Spacing.xxl, marginBottom: Spacing.md }]} />
+
+          {/* Skeleton continue card */}
+          <View style={styles.skeletonCard}>
+            <View style={[styles.skeletonBar, { width: '60%', height: 20 }]} />
+            <View style={[styles.skeletonBar, { width: '40%', height: 12, marginTop: 8 }]} />
+          </View>
+
+          {/* Skeleton section label */}
+          <View style={[styles.skeletonBar, { width: 90, height: 10, marginTop: Spacing.xxl, marginBottom: Spacing.md }]} />
+
+          {/* Skeleton progress card */}
+          <View style={styles.skeletonCard}>
+            <View style={[styles.skeletonBar, { width: '50%', height: 32 }]} />
+            <View style={[styles.skeletonBar, { width: '100%', height: 8, marginTop: 16 }]} />
+            <View style={[styles.skeletonBar, { width: '40%', height: 10, marginTop: 12 }]} />
+          </View>
+
+          <Text style={styles.skeletonHint}>Loading your language…</Text>
+        </ScrollView>
       </SafeAreaView>
     );
   }
@@ -168,7 +209,7 @@ export default function Home() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* 1. Header with Contributions · Profile · Switch */}
+        {/* 1. Header */}
         <View style={styles.headerRow}>
           <View style={styles.headerLeft}>
             <Text style={styles.headerLabel}>LEARNING</Text>
@@ -320,15 +361,9 @@ export default function Home() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  center: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: Spacing.lg,
-  },
-  loadingText: { ...Typography.caption, color: Colors.textSecondary },
   content: { paddingHorizontal: Spacing.xl, paddingVertical: Spacing.xxl },
 
+  // Header
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -369,6 +404,7 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
   },
 
+  // Section label
   sectionLabel: {
     ...Typography.label,
     color: Colors.textSecondary,
@@ -376,6 +412,7 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.md,
   },
 
+  // Continue card
   continueCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -411,6 +448,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
 
+  // Complete card
   completeCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -431,6 +469,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 
+  // Error card
   errorCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -464,6 +503,7 @@ const styles = StyleSheet.create({
     color: Colors.primaryLight,
   },
 
+  // Empty
   emptyCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -474,6 +514,7 @@ const styles = StyleSheet.create({
   },
   emptyText: { ...Typography.caption, color: Colors.textSecondary },
 
+  // Progress
   progressCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -508,6 +549,7 @@ const styles = StyleSheet.create({
   },
   progressDetail: { ...Typography.tiny, color: Colors.textMuted },
 
+  // Contribute
   contributeCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -527,6 +569,7 @@ const styles = StyleSheet.create({
   },
   contributeText: { ...Typography.caption, color: Colors.textSecondary },
 
+  // Error
   errorBox: {
     marginTop: Spacing.lg,
     padding: Spacing.md,
@@ -539,5 +582,25 @@ const styles = StyleSheet.create({
     ...Typography.caption,
     color: Colors.danger,
     textAlign: 'center',
+  },
+
+  // Skeleton styles
+  skeletonBar: {
+    backgroundColor: Colors.surfaceLight,
+    borderRadius: Radius.sm,
+    opacity: 0.6,
+  },
+  skeletonCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.xl,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  skeletonHint: {
+    ...Typography.tiny,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    marginTop: Spacing.xxl,
   },
 });

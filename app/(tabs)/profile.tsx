@@ -8,10 +8,12 @@
 // Reminder preference:
 //   - Toggle "Daily reminder" on → request permission → save to Firestore
 //   - Toggle off → save to Firestore
-//   - If permission denied permanently → show message directing to device settings
+//   - If permission denied → toggle stays off, permissionDenied flag set
 //
-// Note: expo-notifications has limited functionality in Expo Go.
-// Permission prompt works; actual notification delivery requires a dev build.
+// Note: we do NOT call getPermissionStatus() on profile load — that would
+// eagerly import expo-notifications and emit a warning in Expo Go on every
+// visit. Permission status is checked only when the user interacts with the
+// toggle.
 
 import { useState, useCallback } from 'react';
 import {
@@ -31,7 +33,6 @@ import { Colors, Spacing, Radius, Typography } from '../../theme';
 import { getCurrentUser, signOutUser } from '../../services/auth';
 import { getUserContributionCount } from '../../services/contributions';
 import {
-  getPermissionStatus,
   requestPermission,
   getReminderPreference,
   setReminderPreference,
@@ -80,19 +81,13 @@ export default function Profile() {
       // Leave count at 0
     }
 
-    // Reminder preference + permission status
+    // Reminder preference only — no permission status check here
+    // (that would eagerly import expo-notifications and log a warning on every load)
     try {
       const prefRes = await getReminderPreference(current.uid);
       if (prefRes.ok) setReminderEnabled(prefRes.enabled);
-
-      const permRes = await getPermissionStatus();
-      if (permRes.ok && !permRes.granted && !permRes.canAskAgain) {
-        setPermissionDenied(true);
-      } else {
-        setPermissionDenied(false);
-      }
     } catch {
-      // Non-fatal — defaults apply
+      // Non-fatal — default to off
     }
 
     setLoading(false);
@@ -151,7 +146,6 @@ export default function Profile() {
       const permRes = await requestPermission();
 
       if (!permRes.ok || !permRes.granted) {
-        // Denied or failed
         if (permRes.canAskAgain === false) {
           setPermissionDenied(true);
         }
@@ -159,10 +153,10 @@ export default function Profile() {
         return;
       }
 
-      // Permission granted — save preference
       const saveRes = await setReminderPreference(user.uid, true);
       if (saveRes.ok) {
         setReminderEnabled(true);
+        setPermissionDenied(false);
       }
     } else {
       // Turning OFF — just save
@@ -308,7 +302,7 @@ export default function Profile() {
             )}
           </View>
 
-          {/* Permission denied notice */}
+          {/* Permission denied notice — shown only after user taps toggle and is denied */}
           {permissionDenied && (
             <Pressable
               style={styles.permDeniedBox}

@@ -5,12 +5,32 @@
 // actual daily reminders in a future session.
 //
 // Preference stored at: users/{uid}.reminderEnabled = true | false
+//
+// Note on lazy-loading:
+//   expo-notifications emits a warning in Expo Go on import (SDK 53+).
+//   We lazy-import it inside each function so the warning only appears
+//   when notifications are actually being used — not on every app launch.
 
-import * as Notifications from 'expo-notifications';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from './firebase';
 
 const USERS_COL = 'users';
+
+// Cache the module after first load so subsequent calls are fast
+let notificationsModule = null;
+
+async function getNotificationsModule() {
+  if (notificationsModule) return notificationsModule;
+  try {
+    notificationsModule = await import('expo-notifications');
+    return notificationsModule;
+  } catch (error) {
+    throw new Error(
+      'Notifications not available in this environment. ' +
+      'A development build is required for push notifications.'
+    );
+  }
+}
 
 // ─────────────────────────────────────────────────────────────
 // PERMISSIONS
@@ -18,19 +38,10 @@ const USERS_COL = 'users';
 
 /**
  * Get the current notification permission status without prompting.
- *
- * Returns:
- *   {
- *     ok: true,
- *     granted: boolean,
- *     canAskAgain: boolean,   // true if we can prompt again, false if user blocked
- *     status: string          // 'granted' | 'denied' | 'undetermined'
- *   }
- *
- * @returns {Promise<{ ok: boolean, granted?: boolean, canAskAgain?: boolean, status?: string, error?: string }>}
  */
 export async function getPermissionStatus() {
   try {
+    const Notifications = await getNotificationsModule();
     const settings = await Notifications.getPermissionsAsync();
     return {
       ok: true,
@@ -45,15 +56,10 @@ export async function getPermissionStatus() {
 
 /**
  * Request notification permission.
- * - If already granted: returns granted without prompting.
- * - If never asked: shows system prompt.
- * - If denied permanently (canAskAgain false): returns denied; caller should
- *   direct user to device settings.
- *
- * @returns {Promise<{ ok: boolean, granted?: boolean, canAskAgain?: boolean, error?: string }>}
  */
 export async function requestPermission() {
   try {
+    const Notifications = await getNotificationsModule();
     const settings = await Notifications.requestPermissionsAsync();
     return {
       ok: true,
@@ -71,9 +77,6 @@ export async function requestPermission() {
 
 /**
  * Read the user's reminder preference.
- *
- * @param {string} uid
- * @returns {Promise<{ ok: boolean, enabled?: boolean, error?: string }>}
  */
 export async function getReminderPreference(uid) {
   try {
@@ -95,10 +98,6 @@ export async function getReminderPreference(uid) {
 
 /**
  * Write the user's reminder preference.
- *
- * @param {string} uid
- * @param {boolean} enabled
- * @returns {Promise<{ ok: boolean, error?: string }>}
  */
 export async function setReminderPreference(uid, enabled) {
   try {
