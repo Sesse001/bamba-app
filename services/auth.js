@@ -9,6 +9,10 @@
 //   Firebase Auth has completed. The Firestore user-profile write is done in
 //   the background (unawaited). Home's self-healing handles the rare case
 //   where the background write hasn't finished yet.
+//
+// Sign-out clears user-specific local caches (active language) so the next
+// user on the device starts fresh. The `bamba.onboarded` flag stays — it's
+// per-install, not per-user.
 
 import {
   signInAnonymously,
@@ -22,6 +26,7 @@ import {
 } from 'firebase/auth';
 import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from './firebase';
+import { clearActiveLanguageCache } from './languages';
 
 // ─────────────────────────────────────────────────────────────
 // GUEST (ANONYMOUS) AUTH
@@ -44,8 +49,6 @@ export async function signInAsGuest() {
     const user = credential.user;
 
     // Fire-and-forget: ensure the user profile doc exists.
-    // We don't await — the user can proceed to Home immediately.
-    // If this fails, Home's self-heal will catch it.
     ensureUserProfile(user, { isGuest: true }).catch(() => {});
 
     return { ok: true, user };
@@ -79,7 +82,6 @@ export async function signUpWithEmail(email, password, displayName) {
       const result = await linkWithCredential(currentUser, credential);
       const upgradedUser = result.user;
 
-      // Set display name (fast, local — safe to await)
       if (displayName) {
         try {
           await updateProfile(upgradedUser, { displayName });
@@ -105,7 +107,6 @@ export async function signUpWithEmail(email, password, displayName) {
     );
     const newUser = credential.user;
 
-    // Set display name (fast, local — safe to await)
     if (displayName) {
       try {
         await updateProfile(newUser, { displayName });
@@ -127,7 +128,7 @@ export async function signUpWithEmail(email, password, displayName) {
 
 /**
  * Sign in with an existing email/password account.
- * Fast — no Firestore write required.
+ * Fast — no Firestore write awaited.
  *
  * @param {string} email
  * @param {string} password
@@ -163,9 +164,21 @@ export function isGuest() {
   return auth.currentUser?.isAnonymous ?? false;
 }
 
+/**
+ * Sign out the current user (guest or real).
+ * Clears user-specific local caches so the next user starts fresh.
+ * Keeps `bamba.onboarded` — that flag is per-install, not per-user.
+ */
 export async function signOutUser() {
   try {
     await signOut(auth);
+
+    // Clear user-specific local caches.
+    // Non-fatal — the next sign-in just reads from Firestore directly.
+    try {
+      await clearActiveLanguageCache();
+    } catch {}
+
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
@@ -179,9 +192,6 @@ export async function signOutUser() {
 /**
  * Ensures a `users/{uid}` doc exists in Firestore.
  * If it already exists, only merges non-destructive fields.
- *
- * Now called fire-and-forget from sign-in flows — errors are swallowed
- * by the caller. Home's self-heal provides a safety net.
  */
 async function ensureUserProfile(user, extra = {}) {
   const ref = doc(db, 'users', user.uid);
@@ -196,7 +206,7 @@ async function ensureUserProfile(user, extra = {}) {
       displayName: extra.displayName ?? null,
       email: extra.email ?? null,
       upgradedFromGuest: extra.upgradedFromGuest ?? false,
-      onboarded: true, // user doc is created after onboarding completes
+      onboarded: true,
       languages: [],
       role: 'learner',
     });
