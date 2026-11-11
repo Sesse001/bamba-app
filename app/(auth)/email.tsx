@@ -1,6 +1,12 @@
 // app/(auth)/email.tsx
 // Email sign-up / sign-in with mode toggle.
 // If current user is anonymous guest, sign-up UPGRADES them (same UID, preserves data).
+//
+// Forgot password flow (signin mode only):
+//   - "Forgot password?" link below password field
+//   - Tapping opens a confirmation state (uses typed email, or prompts for one)
+//   - Calls sendPasswordReset() → neutral success message
+//   - Neutral message to prevent email enumeration
 
 import { useState } from 'react';
 import {
@@ -16,23 +22,38 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 import { useRouter } from 'expo-router';
 import { Colors, Spacing, Radius, Typography } from '../../theme';
-import { signUpWithEmail, signInWithEmail } from '../../services/auth';
+import {
+  signUpWithEmail,
+  signInWithEmail,
+  sendPasswordReset,
+} from '../../services/auth';
 
 export default function EmailAuth() {
   const router = useRouter();
 
-  const [mode, setMode] = useState('signup');
+  const [mode, setMode] = useState('signup'); // 'signup' | 'signin'
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [infoMessage, setInfoMessage] = useState(null);
+
+  // Password reset state
+  const [showResetPrompt, setShowResetPrompt] = useState(false);
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetting, setResetting] = useState(false);
+  const [resetSuccess, setResetSuccess] = useState(false);
 
   const isSignup = mode === 'signup';
 
+  // ─────────────────────────────────────────────
+  // SUBMIT (signin or signup)
+  // ─────────────────────────────────────────────
   const handleSubmit = async () => {
     setError(null);
+    setInfoMessage(null);
 
     if (!email.trim() || !password.trim()) {
       setError('Please fill in email and password.');
@@ -65,8 +86,155 @@ export default function EmailAuth() {
   const toggleMode = () => {
     setMode(isSignup ? 'signin' : 'signup');
     setError(null);
+    setInfoMessage(null);
+    setShowResetPrompt(false);
+    setResetSuccess(false);
+    setResetEmail('');
   };
 
+  // ─────────────────────────────────────────────
+  // PASSWORD RESET
+  // ─────────────────────────────────────────────
+  const handleForgotPasswordPress = () => {
+    // Pre-fill with typed email if available
+    setResetEmail(email.trim());
+    setShowResetPrompt(true);
+    setResetSuccess(false);
+    setError(null);
+    setInfoMessage(null);
+  };
+
+  const handleSendReset = async () => {
+    setError(null);
+    setInfoMessage(null);
+
+    if (!resetEmail.trim()) {
+      setError('Please enter your email address.');
+      return;
+    }
+
+    setResetting(true);
+    const result = await sendPasswordReset(resetEmail.trim());
+    setResetting(false);
+
+    if (result.ok) {
+      // Firebase doesn't reveal whether the email exists — show neutral success
+      setResetSuccess(true);
+    } else {
+      setError(result.error);
+    }
+  };
+
+  const handleCancelReset = () => {
+    setShowResetPrompt(false);
+    setResetSuccess(false);
+    setResetEmail('');
+    setError(null);
+    setInfoMessage(null);
+  };
+
+  // ─────────────────────────────────────────────
+  // PASSWORD RESET VIEW
+  // ─────────────────────────────────────────────
+  if (showResetPrompt) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <KeyboardAwareScrollView
+          contentContainerStyle={styles.content}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          enableOnAndroid={true}
+          extraHeight={120}
+        >
+          {/* Back */}
+          <Pressable
+            style={styles.backBtn}
+            onPress={handleCancelReset}
+            hitSlop={12}
+          >
+            <Text style={styles.backText}>← Back</Text>
+          </Pressable>
+
+          {/* Title */}
+          <Text style={styles.title}>Reset password</Text>
+          <Text style={styles.subtitle}>
+            {resetSuccess
+              ? "Check your email for the reset link."
+              : "Enter the email you signed up with, and we'll send a reset link."}
+          </Text>
+
+          {resetSuccess ? (
+            <>
+              {/* Success state */}
+              <View style={styles.successBox}>
+                <Text style={styles.successIcon}>✓</Text>
+                <Text style={styles.successTitle}>Reset link sent</Text>
+                <Text style={styles.successText}>
+                  If an account exists with {resetEmail}, you'll receive an
+                  email with instructions to reset your password. It may take
+                  a minute or two to arrive.
+                </Text>
+                <Text style={styles.successHint}>
+                  Check your spam folder if you don't see it.
+                </Text>
+              </View>
+
+              <Pressable
+                style={styles.btnPrimary}
+                onPress={handleCancelReset}
+              >
+                <Text style={styles.btnPrimaryText}>Back to sign in</Text>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              {/* Input state */}
+              <View style={styles.form}>
+                <Text style={styles.label}>EMAIL</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="you@example.com"
+                  placeholderTextColor={Colors.textMuted}
+                  value={resetEmail}
+                  onChangeText={setResetEmail}
+                  autoCapitalize="none"
+                  keyboardType="email-address"
+                  autoComplete="email"
+                  editable={!resetting}
+                />
+              </View>
+
+              {error && (
+                <View style={styles.errorBox}>
+                  <Text style={styles.errorText}>{String(error)}</Text>
+                </View>
+              )}
+
+              <Pressable
+                style={[styles.btnPrimary, resetting && styles.btnDisabled]}
+                onPress={handleSendReset}
+                disabled={resetting}
+              >
+                {resetting ? (
+                  <ActivityIndicator color={Colors.text} size="small" />
+                ) : (
+                  <Text style={styles.btnPrimaryText}>Send reset link</Text>
+                )}
+              </Pressable>
+
+              <Pressable onPress={handleCancelReset} hitSlop={12}>
+                <Text style={styles.toggleText}>Cancel</Text>
+              </Pressable>
+            </>
+          )}
+        </KeyboardAwareScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // NORMAL AUTH VIEW
+  // ─────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAwareScrollView
@@ -146,12 +314,30 @@ export default function EmailAuth() {
               <Text style={styles.eyeText}>{showPassword ? '🙈' : '👁️'}</Text>
             </Pressable>
           </View>
+
+          {/* Forgot password — signin mode only */}
+          {!isSignup && (
+            <Pressable
+              style={styles.forgotBtn}
+              onPress={handleForgotPasswordPress}
+              hitSlop={12}
+            >
+              <Text style={styles.forgotText}>Forgot password?</Text>
+            </Pressable>
+          )}
         </View>
 
         {/* Error */}
         {error && (
           <View style={styles.errorBox}>
             <Text style={styles.errorText}>{String(error)}</Text>
+          </View>
+        )}
+
+        {/* Info message */}
+        {infoMessage && (
+          <View style={styles.infoBox}>
+            <Text style={styles.infoText}>{String(infoMessage)}</Text>
           </View>
         )}
 
@@ -261,6 +447,17 @@ const styles = StyleSheet.create({
     fontSize: 20,
   },
 
+  // Forgot password link
+  forgotBtn: {
+    alignSelf: 'flex-end',
+    marginTop: Spacing.md,
+    paddingVertical: Spacing.sm,
+  },
+  forgotText: {
+    ...Typography.caption,
+    color: Colors.primaryLight,
+  },
+
   errorBox: {
     marginTop: Spacing.md,
     marginBottom: Spacing.md,
@@ -275,6 +472,22 @@ const styles = StyleSheet.create({
     color: Colors.danger,
     textAlign: 'center',
   },
+
+  infoBox: {
+    marginTop: Spacing.md,
+    marginBottom: Spacing.md,
+    padding: Spacing.md,
+    borderRadius: Radius.md,
+    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+    borderWidth: 1,
+    borderColor: Colors.info,
+  },
+  infoText: {
+    ...Typography.caption,
+    color: Colors.info,
+    textAlign: 'center',
+  },
+
   btnPrimary: {
     backgroundColor: Colors.primary,
     paddingVertical: Spacing.lg,
@@ -302,5 +515,40 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
     textAlign: 'center',
     marginTop: Spacing.xxl,
+  },
+
+  // Success state (reset email sent)
+  successBox: {
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.xl,
+    borderWidth: 1,
+    borderColor: Colors.success,
+    alignItems: 'center',
+    marginBottom: Spacing.xxl,
+    gap: Spacing.sm,
+  },
+  successIcon: {
+    fontSize: 48,
+    color: Colors.success,
+    marginBottom: Spacing.sm,
+  },
+  successTitle: {
+    ...Typography.h3,
+    color: Colors.success,
+    marginBottom: Spacing.xs,
+  },
+  successText: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  successHint: {
+    ...Typography.tiny,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    marginTop: Spacing.sm,
+    fontStyle: 'italic',
   },
 });

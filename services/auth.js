@@ -23,6 +23,7 @@ import {
   updateProfile,
   EmailAuthProvider,
   linkWithCredential,
+  sendPasswordResetEmail,
 } from 'firebase/auth';
 import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from './firebase';
@@ -40,7 +41,6 @@ import { clearActiveLanguageCache } from './languages';
  */
 export async function signInAsGuest() {
   try {
-    // If already signed in (guest OR real), don't create another
     if (auth.currentUser) {
       return { ok: true, user: auth.currentUser };
     }
@@ -48,7 +48,6 @@ export async function signInAsGuest() {
     const credential = await signInAnonymously(auth);
     const user = credential.user;
 
-    // Fire-and-forget: ensure the user profile doc exists.
     ensureUserProfile(user, { isGuest: true }).catch(() => {});
 
     return { ok: true, user };
@@ -64,7 +63,6 @@ export async function signInAsGuest() {
 /**
  * Sign up with email/password.
  * - If current user is anonymous: UPGRADES the anonymous account via linkWithCredential.
- *   Same UID, all contributions/progress preserved.
  * - If no user signed in: creates a fresh account.
  *
  * @param {string} email
@@ -88,7 +86,6 @@ export async function signUpWithEmail(email, password, displayName) {
         } catch {}
       }
 
-      // Fire-and-forget: write profile doc in background
       ensureUserProfile(upgradedUser, {
         isGuest: false,
         displayName: displayName || null,
@@ -113,7 +110,6 @@ export async function signUpWithEmail(email, password, displayName) {
       } catch {}
     }
 
-    // Fire-and-forget: write profile doc in background
     ensureUserProfile(newUser, {
       isGuest: false,
       displayName: displayName || null,
@@ -128,7 +124,6 @@ export async function signUpWithEmail(email, password, displayName) {
 
 /**
  * Sign in with an existing email/password account.
- * Fast — no Firestore write awaited.
  *
  * @param {string} email
  * @param {string} password
@@ -139,10 +134,32 @@ export async function signInWithEmail(email, password) {
     const credential = await signInWithEmailAndPassword(auth, email, password);
     const user = credential.user;
 
-    // Fire-and-forget: update lastSeenAt + ensure doc exists.
     ensureUserProfile(user, {}).catch(() => {});
 
     return { ok: true, user };
+  } catch (error) {
+    return { ok: false, error: mapAuthError(error) };
+  }
+}
+
+/**
+ * Send a password reset email.
+ *
+ * Note: Firebase returns "success" even if the email doesn't have an account.
+ * This prevents attackers from discovering which emails are registered.
+ * Callers should show a neutral message: "If an account exists, you'll receive
+ * a reset link shortly."
+ *
+ * @param {string} email
+ * @returns {Promise<{ ok: boolean, error?: string }>}
+ */
+export async function sendPasswordReset(email) {
+  try {
+    if (!email || !email.trim()) {
+      return { ok: false, error: 'Please enter your email address.' };
+    }
+    await sendPasswordResetEmail(auth, email.trim());
+    return { ok: true };
   } catch (error) {
     return { ok: false, error: mapAuthError(error) };
   }
@@ -164,17 +181,10 @@ export function isGuest() {
   return auth.currentUser?.isAnonymous ?? false;
 }
 
-/**
- * Sign out the current user (guest or real).
- * Clears user-specific local caches so the next user starts fresh.
- * Keeps `bamba.onboarded` — that flag is per-install, not per-user.
- */
 export async function signOutUser() {
   try {
     await signOut(auth);
 
-    // Clear user-specific local caches.
-    // Non-fatal — the next sign-in just reads from Firestore directly.
     try {
       await clearActiveLanguageCache();
     } catch {}
@@ -189,10 +199,6 @@ export async function signOutUser() {
 // INTERNAL HELPERS
 // ─────────────────────────────────────────────────────────────
 
-/**
- * Ensures a `users/{uid}` doc exists in Firestore.
- * If it already exists, only merges non-destructive fields.
- */
 async function ensureUserProfile(user, extra = {}) {
   const ref = doc(db, 'users', user.uid);
   const snap = await getDoc(ref);
@@ -225,9 +231,6 @@ async function ensureUserProfile(user, extra = {}) {
   }
 }
 
-/**
- * Converts raw Firebase auth errors into user-friendly strings.
- */
 function mapAuthError(error) {
   const code = error?.code || '';
   switch (code) {
