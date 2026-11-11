@@ -5,7 +5,7 @@
 //   users/{uid}/progress/{contentId}
 //     seen:        boolean  — user opened the card
 //     attempts:    number   — how many times they've interacted
-//     completed:   boolean  — marked as done (revealed + submitted or skipped)
+//     completed:   boolean  — marked as done (via Next, not Skip)
 //     firstSeenAt: timestamp
 //     lastSeenAt:  timestamp
 //
@@ -178,7 +178,6 @@ export async function getProgress(uid, contentId) {
 
 /**
  * Get all progress docs for a user, keyed by contentId.
- * Returns: { "zu_greeting_hello": {...}, ... }
  */
 export async function getAllProgress(uid) {
   try {
@@ -202,11 +201,6 @@ export async function getAllProgress(uid) {
 
 /**
  * Summary counts for a set of content IDs.
- * Returns both aggregate counts AND the raw map so callers can find specific items.
- *
- * @param {string} uid
- * @param {string[]} contentIds — the content in the current lesson/set
- * @returns {Promise<{ ok: boolean, data?: { seen, completed, total, byContentId }, error?: string }>}
  */
 export async function getProgressSummary(uid, contentIds) {
   try {
@@ -219,8 +213,6 @@ export async function getProgressSummary(uid, contentIds) {
 
     let seen = 0;
     let completed = 0;
-
-    // Only include progress entries for the content IDs in question
     const byContentId = {};
 
     for (const id of contentIds) {
@@ -245,11 +237,7 @@ export async function getProgressSummary(uid, contentIds) {
  * Given a list of content IDs, return the first one that is NOT completed.
  * Returns null if all are completed.
  *
- * Used by Home to pick the "Continue learning" card.
- *
- * @param {string} uid
- * @param {Array<{id: string, order?: number}>} items — full content list (ordered)
- * @returns {Promise<{ ok: boolean, next?: object | null, error?: string }>}
+ * Used by Home for "Continue learning" and by Learn's "Next" button.
  */
 export async function getNextIncompleteItem(uid, items) {
   try {
@@ -270,9 +258,25 @@ export async function getNextIncompleteItem(uid, items) {
       }
     }
 
-    // All completed
     return { ok: true, next: null };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
   }
+}
+
+/**
+ * Find the next item after the given content ID, in array order.
+ * Used by Skip — advances regardless of completion status.
+ *
+ * @param {Array<{id: string}>} items — full content list (ordered)
+ * @param {string} currentId — the current item's ID
+ * @returns {object | null} — the next item, or null if last
+ */
+export function getNextItemAfter(items, currentId) {
+  if (!Array.isArray(items) || items.length === 0) return null;
+
+  const currentIndex = items.findIndex((i) => i.id === currentId);
+  if (currentIndex === -1) return null;
+
+  return items[currentIndex + 1] || null;
 }

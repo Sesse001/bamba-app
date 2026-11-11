@@ -4,21 +4,16 @@
 // Flow:
 //   1. Load the content item (from route param contentId)
 //   2. Show prompt ("Hello")
-//   3. Tap "Reveal" → show translations (Sawubona, Sanibonani)
+//   3. Tap "Reveal" → show translations
 //   4. Optional: "Try your own" → contribution input → submit
-//   5. Tap "Next" → mark completed, advance to next incomplete item
-//   6. When all done → brief success → return to Home
+//   5. Tap "Next" → mark completed, advance to next INCOMPLETE item
+//   6. OR tap "Skip" → mark as attempted, show brief notice, advance to
+//      NEXT item in order (skip doesn't complete the card)
 //
 // Progress writes:
 //   - markSeen on card load
-//   - markAttempt on reveal
-//   - markCompleted on "Next"
-//   - contribution submit writes to contributions/ collection
-//
-// Content honesty:
-//   Each seeded translation shows a [DEMO] badge — it's prototype content,
-//   not yet verified by a native speaker. When a translation is later
-//   reviewed, the badge will flip to [VERIFIED] (M5+ work).
+//   - markAttempt on reveal OR skip
+//   - markCompleted on "Next" only
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -44,12 +39,11 @@ import {
   markAttempt,
   markCompleted,
   getNextIncompleteItem,
+  getNextItemAfter,
 } from '../../services/progress';
 import { submitContribution } from '../../services/contributions';
 import { getCurrentUser } from '../../services/auth';
 
-// Status → badge label mapping
-// Later: extend with 'community_supported', 'verified', etc.
 const STATUS_BADGES = {
   reviewed: { label: 'DEMO', color: Colors.primaryLight },
   community_supported: { label: 'DEMO', color: Colors.primaryLight },
@@ -65,11 +59,13 @@ export default function Learn() {
   const initialContentId = params.contentId || null;
 
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState(null); // fatal — can't proceed
+  const [loadError, setLoadError] = useState(null);
   const [content, setContent] = useState(null);
   const [translations, setTranslations] = useState([]);
   const [revealed, setRevealed] = useState(false);
-  const [actionError, setActionError] = useState(null); // non-fatal — show inline
+  const [actionError, setActionError] = useState(null);
+  const [skipping, setSkipping] = useState(false);
+  const [skipNotice, setSkipNotice] = useState(null);
 
   // Contribution state
   const [showContribute, setShowContribute] = useState(false);
@@ -78,14 +74,12 @@ export default function Learn() {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
 
-  // Refs
   const markedSeenRef = useRef(false);
   const lastContentIdRef = useRef(null);
 
   // ─────────────────────────────────────────────
   // LOAD
   // ─────────────────────────────────────────────
-
   const loadItem = useCallback(async (contentId) => {
     setLoading(true);
     setLoadError(null);
@@ -95,6 +89,8 @@ export default function Learn() {
     setContribText('');
     setContribNote('');
     setSubmitted(false);
+    setSkipping(false);
+    setSkipNotice(null);
     markedSeenRef.current = false;
     lastContentIdRef.current = contentId;
 
@@ -116,19 +112,15 @@ export default function Learn() {
     if (transRes.ok) {
       setTranslations(transRes.data || []);
     } else {
-      // Translations failing isn't fatal — user can still reveal and see "no expressions"
       setTranslations([]);
     }
 
-    // Mark as seen (once per card)
     const user = getCurrentUser();
     if (user && !markedSeenRef.current) {
       markedSeenRef.current = true;
       try {
         await markSeen(user.uid, contentId);
-      } catch {
-        // Non-fatal — progress mark can be retried on Next
-      }
+      } catch {}
     }
 
     setLoading(false);
@@ -143,9 +135,30 @@ export default function Learn() {
   };
 
   // ─────────────────────────────────────────────
-  // ACTIONS
+  // ADVANCE TO NEXT INCOMPLETE (used by Next)
   // ─────────────────────────────────────────────
+  const advanceToNextIncomplete = async () => {
+    const user = getCurrentUser();
+    if (!user || !content) return;
 
+    const lessonRes = await getDemoLesson(content.languageId, 10);
+    if (!lessonRes.ok) {
+      router.replace('/(tabs)/home');
+      return;
+    }
+
+    const nextRes = await getNextIncompleteItem(user.uid, lessonRes.data);
+
+    if (nextRes.ok && nextRes.next && nextRes.next.id !== content.id) {
+      loadItem(nextRes.next.id);
+    } else {
+      router.replace('/(tabs)/home');
+    }
+  };
+
+  // ─────────────────────────────────────────────
+  // REVEAL
+  // ─────────────────────────────────────────────
   const handleReveal = async () => {
     setRevealed(true);
 
@@ -153,12 +166,74 @@ export default function Learn() {
     if (user && content) {
       try {
         await markAttempt(user.uid, content.id);
-      } catch {
-        // Non-fatal — user already sees translations
-      }
+      } catch {}
     }
   };
 
+  // ─────────────────────────────────────────────
+  // SKIP (advance to next item, no completion, show notice)
+  // ─────────────────────────────────────────────
+  const handleSkip = async () => {
+    if (skipping) return;
+
+    setSkipping(true);
+    setActionError(null);
+    setSkipNotice(null);
+
+    const user = getCurrentUser();
+    if (!user || !content) {
+      setSkipping(false);
+      return;
+    }
+
+    // Show brief notice
+    setSkipNotice("Skipped — we'll come back to this later.");
+
+    // Mark as attempted (user saw it, chose not to complete)
+    try {
+      await markAttempt(user.uid, content.id);
+    } catch {}
+
+    // Fetch lesson to find what comes AFTER the current card
+    const lessonRes = await getDemoLesson(content.languageId, 10);
+    if (!lessonRes.ok) {
+      setSkipping(false);
+      router.replace('/(tabs)/home');
+      return;
+    }
+
+    // Get the next item in array order, regardless of completion
+    const nextItem = getNextItemAfter(lessonRes.data, content.id);
+
+    // Give the notice time to be visible before advancing
+    setTimeout(() => {
+      if (nextItem) {
+        loadItem(nextItem.id);
+      } else {
+        router.replace('/(tabs)/home');
+      }
+    }, 800);
+  };
+
+  // ─────────────────────────────────────────────
+  // NEXT (marks completed, advances to next incomplete)
+  // ─────────────────────────────────────────────
+  const handleNext = async () => {
+    const user = getCurrentUser();
+    if (!user || !content) return;
+
+    setActionError(null);
+
+    try {
+      await markCompleted(user.uid, content.id);
+    } catch {}
+
+    await advanceToNextIncomplete();
+  };
+
+  // ─────────────────────────────────────────────
+  // SUBMIT CONTRIBUTION
+  // ─────────────────────────────────────────────
   const handleSubmitContribution = async () => {
     if (!contribText.trim()) {
       setActionError('Please enter your expression');
@@ -193,33 +268,6 @@ export default function Learn() {
     }
   };
 
-  const handleNext = async () => {
-    const user = getCurrentUser();
-    if (!user || !content) return;
-
-    setActionError(null);
-
-    try {
-      await markCompleted(user.uid, content.id);
-    } catch {
-      // Non-fatal — continue to next
-    }
-
-    const lessonRes = await getDemoLesson(content.languageId, 10);
-    if (!lessonRes.ok) {
-      router.replace('/(tabs)/home');
-      return;
-    }
-
-    const nextRes = await getNextIncompleteItem(user.uid, lessonRes.data);
-
-    if (nextRes.ok && nextRes.next && nextRes.next.id !== content.id) {
-      loadItem(nextRes.next.id);
-    } else {
-      router.replace('/(tabs)/home');
-    }
-  };
-
   const handleBack = () => {
     router.replace('/(tabs)/home');
   };
@@ -227,7 +275,6 @@ export default function Learn() {
   // ─────────────────────────────────────────────
   // RENDER — LOADING
   // ─────────────────────────────────────────────
-
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -241,7 +288,6 @@ export default function Learn() {
   // ─────────────────────────────────────────────
   // RENDER — FATAL LOAD ERROR
   // ─────────────────────────────────────────────
-
   if (loadError) {
     return (
       <SafeAreaView style={styles.container}>
@@ -269,7 +315,6 @@ export default function Learn() {
   // ─────────────────────────────────────────────
   // RENDER — NORMAL
   // ─────────────────────────────────────────────
-
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAwareScrollView
@@ -299,9 +344,28 @@ export default function Learn() {
 
         {/* Reveal */}
         {!revealed ? (
-          <Pressable style={styles.btnPrimary} onPress={handleReveal}>
-            <Text style={styles.btnPrimaryText}>Reveal</Text>
-          </Pressable>
+          <>
+            <Pressable style={styles.btnPrimary} onPress={handleReveal}>
+              <Text style={styles.btnPrimaryText}>Reveal</Text>
+            </Pressable>
+
+            <Pressable
+              style={styles.skipBtn}
+              onPress={handleSkip}
+              disabled={skipping}
+              hitSlop={12}
+            >
+              {skipping ? (
+                <Text style={styles.skipNoticeText}>
+                  {skipNotice || 'Skipping…'}
+                </Text>
+              ) : (
+                <Text style={styles.skipText}>
+                  I don't know this yet — skip
+                </Text>
+              )}
+            </Pressable>
+          </>
         ) : (
           <>
             {/* Translations */}
@@ -348,14 +412,12 @@ export default function Learn() {
               )}
             </View>
 
-            {/* Demo disclaimer */}
             {translations.length > 0 && (
               <Text style={styles.demoNote}>
                 Demo content — pending native speaker review.
               </Text>
             )}
 
-            {/* Try your own */}
             {!showContribute && !submitted && (
               <Pressable
                 style={styles.contributeBtn}
@@ -367,7 +429,6 @@ export default function Learn() {
               </Pressable>
             )}
 
-            {/* Contribution form */}
             {showContribute && !submitted && (
               <View style={styles.contributeForm}>
                 <Text style={styles.sectionLabel}>YOUR EXPRESSION</Text>
@@ -422,7 +483,6 @@ export default function Learn() {
               </View>
             )}
 
-            {/* Submitted confirmation */}
             {submitted && (
               <View style={styles.successBox}>
                 <Text style={styles.successTitle}>✅ Submitted</Text>
@@ -432,18 +492,31 @@ export default function Learn() {
               </View>
             )}
 
-            {/* Action error (non-fatal — inline) */}
             {actionError && (
               <View style={styles.errorBox}>
                 <Text style={styles.errorText}>{String(actionError)}</Text>
               </View>
             )}
 
-            {/* Next */}
             <Pressable style={styles.btnNext} onPress={handleNext}>
               <Text style={styles.btnNextText}>
                 {submitted ? 'Continue' : 'Next'} →
               </Text>
+            </Pressable>
+
+            <Pressable
+              style={styles.skipBtn}
+              onPress={handleSkip}
+              disabled={skipping}
+              hitSlop={12}
+            >
+              {skipping ? (
+                <Text style={styles.skipNoticeText}>
+                  {skipNotice || 'Skipping…'}
+                </Text>
+              ) : (
+                <Text style={styles.skipText}>Skip without completing</Text>
+              )}
             </Pressable>
           </>
         )}
@@ -470,7 +543,6 @@ const styles = StyleSheet.create({
   topBar: { marginBottom: Spacing.xxl },
   backLink: { ...Typography.body, color: Colors.primaryLight },
 
-  // Prompt
   promptBlock: {
     alignItems: 'center',
     paddingVertical: Spacing.xxl,
@@ -493,7 +565,6 @@ const styles = StyleSheet.create({
     textTransform: 'capitalize',
   },
 
-  // Section
   sectionLabel: {
     ...Typography.label,
     color: Colors.textSecondary,
@@ -501,7 +572,6 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.md,
   },
 
-  // Translations
   translationList: { gap: Spacing.md },
   translationCard: {
     backgroundColor: Colors.surface,
@@ -555,7 +625,23 @@ const styles = StyleSheet.create({
     marginTop: Spacing.md,
   },
 
-  // Contribute button
+  skipBtn: {
+    alignSelf: 'center',
+    paddingVertical: Spacing.lg,
+    paddingHorizontal: Spacing.xl,
+    marginTop: Spacing.lg,
+  },
+  skipText: {
+    ...Typography.body,
+    color: Colors.textMuted,
+    textDecorationLine: 'underline',
+  },
+  skipNoticeText: {
+    ...Typography.body,
+    color: Colors.success,
+    fontStyle: 'italic',
+  },
+
   contributeBtn: {
     marginTop: Spacing.xl,
     paddingVertical: Spacing.lg,
@@ -569,7 +655,6 @@ const styles = StyleSheet.create({
     color: Colors.gold,
   },
 
-  // Form
   contributeForm: { marginTop: Spacing.lg },
   input: {
     backgroundColor: Colors.surface,
@@ -585,7 +670,6 @@ const styles = StyleSheet.create({
     textAlignVertical: 'top',
   },
 
-  // Buttons
   btnPrimary: {
     backgroundColor: Colors.primary,
     paddingVertical: Spacing.lg,
@@ -607,7 +691,6 @@ const styles = StyleSheet.create({
   },
   btnNextText: { ...Typography.bodyBold, color: Colors.text },
 
-  // Cancel
   cancelText: {
     ...Typography.caption,
     color: Colors.textMuted,
@@ -615,7 +698,6 @@ const styles = StyleSheet.create({
     marginTop: Spacing.lg,
   },
 
-  // Success
   successBox: {
     marginTop: Spacing.xl,
     padding: Spacing.lg,
@@ -631,7 +713,6 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
   },
 
-  // Fatal error card (centered, like Home)
   errorCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -664,17 +745,13 @@ const styles = StyleSheet.create({
     minWidth: 120,
     alignItems: 'center',
   },
-  retryText: {
-    ...Typography.bodyBold,
-    color: Colors.primaryLight,
-  },
+  retryText: { ...Typography.bodyBold, color: Colors.primaryLight },
   backToHomeText: {
     ...Typography.caption,
     color: Colors.textMuted,
     marginTop: Spacing.md,
   },
 
-  // Inline action error (non-fatal)
   errorBox: {
     marginTop: Spacing.lg,
     padding: Spacing.md,
