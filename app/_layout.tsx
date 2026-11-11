@@ -4,16 +4,13 @@
 //   2. Auth flow (not signed in)
 //   3. Tabs (signed in)
 //
-// Onboarding persistence uses TWO sources:
-//   1. AsyncStorage  — fast, local
-//   2. Firestore     — durable, cloud (users/{uid}.onboarded)
+// Onboarding persistence uses THREE sources (in order of check):
+//   1. In-memory "justOnboarded" ref — set immediately when user finishes/skips
+//   2. AsyncStorage — fast, local, but may have write-lag
+//   3. Firestore user doc — durable backup (only available once signed in)
 //
-// Why two sources: AsyncStorage on Expo Go / Android dev builds is not
-// always reliable across full app restarts. The Firestore flag acts as a
-// backup — if the local flag is lost, we recover it from the user doc.
-//
-// Special case: signed-in GUESTS can reach (auth)/email to UPGRADE their
-// account via linkWithCredential.
+// The "justOnboarded" ref prevents the loop where AsyncStorage write hasn't
+// flushed before the routing effect re-reads it.
 
 import { useEffect, useState, useRef } from 'react';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
@@ -42,6 +39,8 @@ export default function RootLayout() {
   const navState = useRootNavigationState();
 
   const redirecting = useRef(false);
+  // Set immediately when onboarding completes — bypasses AsyncStorage lag
+  const justOnboarded = useRef(false);
 
   // Subscribe to Firebase auth state changes
   useEffect(() => {
@@ -52,7 +51,7 @@ export default function RootLayout() {
     return unsubscribe;
   }, []);
 
-  // Initial AsyncStorage check (fast path)
+  // Initial AsyncStorage check
   useEffect(() => {
     (async () => {
       try {
@@ -73,11 +72,25 @@ export default function RootLayout() {
     let cancelled = false;
 
     (async () => {
-      // Determine "onboarded" from multiple sources:
-      //   1. AsyncStorage (fast) — if 'true', we trust it
-      //   2. Firestore user doc — if storage says false/missing but user
-      //      exists and doc says onboarded: true, recover.
-      let onboarded = hasOnboarded;
+      // Determine "onboarded" from multiple sources.
+      // 1. In-memory ref takes priority (just finished onboarding)
+      // 2. AsyncStorage
+      // 3. Firestore user doc (only if signed in)
+      let onboarded = justOnboarded.current;
+
+      if (!onboarded) {
+        onboarded = hasOnboarded;
+      }
+
+      if (!onboarded) {
+        try {
+          const flag = await AsyncStorage.getItem(ONBOARDED_KEY);
+          if (flag === 'true') {
+            onboarded = true;
+            justOnboarded.current = true;
+          }
+        } catch {}
+      }
 
       if (!onboarded && user) {
         try {
@@ -85,13 +98,12 @@ export default function RootLayout() {
           const userSnap = await getDoc(userRef);
           if (userSnap.exists() && userSnap.data().onboarded === true) {
             onboarded = true;
+            justOnboarded.current = true;
             try {
               await AsyncStorage.setItem(ONBOARDED_KEY, 'true');
             } catch {}
           }
-        } catch {
-          // Firestore check failed — fall through with current value
-        }
+        } catch {}
       }
 
       if (cancelled) return;

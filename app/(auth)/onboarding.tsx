@@ -7,8 +7,9 @@
 //   - If user is signed in (auto-login or prior session) → go straight to (tabs)
 //   - If not signed in → go to Welcome (sign-in)
 //
-// This avoids the loop caused by the auth gate also wanting to send
-// signed-in users to (tabs) while onboarding tries to send them to Welcome.
+// A small delay before navigating gives AsyncStorage time to flush the flag.
+// The auth gate's in-memory ref also catches the "just onboarded" state,
+// so the delay is belt-and-braces.
 
 import { useState } from 'react';
 import {
@@ -90,12 +91,18 @@ export default function Onboarding() {
 
   const handleSkip = async () => {
     await markComplete();
-    routeAfterOnboarding();
+    // Small delay to let AsyncStorage write settle, then navigate.
+    // The auth gate's in-memory ref will also catch the "just onboarded" state.
+    setTimeout(() => {
+      routeAfterOnboarding();
+    }, 100);
   };
 
   const handleFinish = async () => {
     await markComplete();
-    routeAfterOnboarding();
+    setTimeout(() => {
+      routeAfterOnboarding();
+    }, 100);
   };
 
   return (
