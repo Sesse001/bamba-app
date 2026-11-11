@@ -9,8 +9,8 @@
 //   2. AsyncStorage — fast, local, but may have write-lag
 //   3. Firestore user doc — durable backup (only available once signed in)
 //
-// The "justOnboarded" ref prevents the loop where AsyncStorage write hasn't
-// flushed before the routing effect re-reads it.
+// SAFETY: 6-second timeout on AsyncStorage read. If storage hangs,
+// we proceed with defaults rather than showing infinite spinner.
 
 import { useEffect, useState, useRef } from 'react';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
@@ -28,6 +28,8 @@ import { onAuthChange } from '../services/auth';
 import { db } from '../services/firebase';
 
 const ONBOARDED_KEY = 'bamba.onboarded';
+const STORAGE_TIMEOUT_MS = 6000;
+const AUTH_TIMEOUT_MS = 8000;
 
 export default function RootLayout() {
   const [initializing, setInitializing] = useState(true);
@@ -39,28 +41,70 @@ export default function RootLayout() {
   const navState = useRootNavigationState();
 
   const redirecting = useRef(false);
-  // Set immediately when onboarding completes — bypasses AsyncStorage lag
   const justOnboarded = useRef(false);
+  const authTimeoutRef = useRef(null);
+  const storageTimeoutRef = useRef(null);
 
   // Subscribe to Firebase auth state changes
   useEffect(() => {
     const unsubscribe = onAuthChange((firebaseUser) => {
       setUser(firebaseUser);
-      if (initializing) setInitializing(false);
+      if (initializing) {
+        setInitializing(false);
+        if (authTimeoutRef.current) {
+          clearTimeout(authTimeoutRef.current);
+          authTimeoutRef.current = null;
+        }
+      }
     });
-    return unsubscribe;
+
+    // Safety net: if auth doesn't resolve in 8 seconds, proceed anyway
+    authTimeoutRef.current = setTimeout(() => {
+      setInitializing(false);
+    }, AUTH_TIMEOUT_MS);
+
+    return () => {
+      unsubscribe();
+      if (authTimeoutRef.current) clearTimeout(authTimeoutRef.current);
+    };
   }, []);
 
-  // Initial AsyncStorage check
+  // Read onboarding flag from AsyncStorage with timeout safety
   useEffect(() => {
+    let mounted = true;
+
+    // Safety net: if storage doesn't respond in 6 seconds, assume not onboarded
+    storageTimeoutRef.current = setTimeout(() => {
+      if (mounted && hasOnboarded === null) {
+        setHasOnboarded(false);
+      }
+    }, STORAGE_TIMEOUT_MS);
+
     (async () => {
       try {
         const flag = await AsyncStorage.getItem(ONBOARDED_KEY);
-        setHasOnboarded(flag === 'true');
+        if (mounted) {
+          setHasOnboarded(flag === 'true');
+          if (storageTimeoutRef.current) {
+            clearTimeout(storageTimeoutRef.current);
+            storageTimeoutRef.current = null;
+          }
+        }
       } catch {
-        setHasOnboarded(false);
+        if (mounted) {
+          setHasOnboarded(false);
+          if (storageTimeoutRef.current) {
+            clearTimeout(storageTimeoutRef.current);
+            storageTimeoutRef.current = null;
+          }
+        }
       }
     })();
+
+    return () => {
+      mounted = false;
+      if (storageTimeoutRef.current) clearTimeout(storageTimeoutRef.current);
+    };
   }, []);
 
   // Routing effect
@@ -72,12 +116,7 @@ export default function RootLayout() {
     let cancelled = false;
 
     (async () => {
-      // Determine "onboarded" from multiple sources.
-      // 1. In-memory ref takes priority (just finished onboarding)
-      // 2. AsyncStorage
-      // 3. Firestore user doc (only if signed in)
       let onboarded = justOnboarded.current;
-
       if (!onboarded) {
         onboarded = hasOnboarded;
       }
@@ -126,7 +165,6 @@ export default function RootLayout() {
         }, 150);
       };
 
-      // 1. Not onboarded → force onboarding
       if (!onboarded) {
         if (!onOnboarding) {
           safeReplace('/(auth)/onboarding');
@@ -134,12 +172,10 @@ export default function RootLayout() {
         return;
       }
 
-      // 2. Onboarding is handling its own exit
       if (onOnboarding) {
         return;
       }
 
-      // 3. Onboarded + no user + not on auth → welcome
       if (!user) {
         if (!inAuthGroup) {
           safeReplace('/(auth)/welcome');
@@ -147,10 +183,8 @@ export default function RootLayout() {
         return;
       }
 
-      // 4. Guest on email screen is UPGRADING — allow
       if (isGuest && onEmailScreen) return;
 
-      // 5. Signed-in user stuck on Welcome → tabs
       if (user && onWelcome) {
         safeReplace('/(tabs)');
         return;
