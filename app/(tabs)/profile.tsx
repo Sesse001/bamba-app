@@ -1,15 +1,12 @@
 // app/(tabs)/profile.tsx
-// Profile + sign out + preferences.
+// Profile — account info, stats, preferences, legal, delete, sign out.
 //
-// Shows current account info, stats, and offers a sign-out flow.
-// If user is a guest, warns them BEFORE sign-out that their progress
-// and contributions are tied to a temporary account.
+// Delete Account is now wired up to services/account.js.
+// Flow: tap "Delete account" → confirmation modal → deleteAccount()
+//       → success (auth gate redirects) OR error (shown in modal)
 //
-// Daily reminder:
-//   - Toggle on → request permission → schedule local notification → save to Firestore
-//   - Toggle off → cancel notification → save to Firestore
-//   - Fixed time: 7:00 PM local. Time picker deferred.
-//   - Re-scheduled on every app launch (see Home self-heal)
+// Re-auth handling: if deleteAccount() returns requiresReauth: true,
+// we show the user a clear message and offer to sign in again.
 
 import { useState, useCallback } from 'react';
 import {
@@ -36,6 +33,7 @@ import {
   cancelDailyReminder,
 } from '../../services/notifications';
 import { getActiveLanguageId, getLanguage } from '../../services/languages';
+import { deleteAccount } from '../../services/account';
 
 export default function Profile() {
   const router = useRouter();
@@ -54,9 +52,15 @@ export default function Profile() {
   const [permissionDenied, setPermissionDenied] = useState(false);
 
   // Sign out state
-  const [showWarning, setShowWarning] = useState(false);
+  const [showSignOutWarning, setShowSignOutWarning] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState(null);
+
+  // Delete account state
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState(null);
+  const [requiresReauth, setRequiresReauth] = useState(false);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -72,13 +76,11 @@ export default function Profile() {
     setDisplayName(current.displayName || '');
     setEmail(current.email || '');
 
-    // Contribution count — non-fatal
     try {
       const countRes = await getUserContributionCount(current.uid);
       if (countRes.ok) setContributionCount(countRes.count);
     } catch {}
 
-    // Reminder preference — read only, no permission status check here
     try {
       const prefRes = await getReminderPreference(current.uid);
       if (prefRes.ok) setReminderEnabled(prefRes.enabled);
@@ -104,7 +106,7 @@ export default function Profile() {
   };
 
   const handleCreateAccount = () => {
-    setShowWarning(false);
+    setShowSignOutWarning(false);
     router.push('/(auth)/email');
   };
 
@@ -119,16 +121,79 @@ export default function Profile() {
     } else {
       setSignOutError(result.error);
       setSigningOut(false);
-      setShowWarning(false);
+      setShowSignOutWarning(false);
     }
   };
 
   const handleSignOutPress = () => {
-    setShowWarning(true);
+    setShowSignOutWarning(true);
   };
 
   // ─────────────────────────────────────────────
-  // REMINDER TOGGLE — schedule/cancel real notifications
+  // NAVIGATION
+  // ─────────────────────────────────────────────
+  const handleAbout = () => {
+    router.push('/(tabs)/about');
+  };
+
+  const handlePrivacy = () => {
+    router.push('/legal/privacy');
+  };
+
+  const handleTerms = () => {
+    router.push('/legal/terms');
+  };
+
+  // ─────────────────────────────────────────────
+  // DELETE ACCOUNT
+  // ─────────────────────────────────────────────
+  const handleDeleteAccountPress = () => {
+    setDeleteError(null);
+    setRequiresReauth(false);
+    setShowDeleteModal(true);
+  };
+
+  const handleDeleteConfirm = async () => {
+    setDeleting(true);
+    setDeleteError(null);
+    setRequiresReauth(false);
+
+    const result = await deleteAccount();
+
+    if (result.ok) {
+      // Auth gate detects sign-out and routes to Welcome.
+      // Modal can close — the screen will unmount.
+      setShowDeleteModal(false);
+      setDeleting(false);
+      return;
+    }
+
+    // Failure — show error in modal
+    setDeleting(false);
+    setDeleteError(result.error || 'Could not delete account');
+
+    if (result.requiresReauth) {
+      setRequiresReauth(true);
+    }
+  };
+
+  const handleCloseDeleteModal = () => {
+    if (deleting) return; // Prevent close during deletion
+    setShowDeleteModal(false);
+    setDeleteError(null);
+    setRequiresReauth(false);
+  };
+
+  const handleReauthAndRetry = async () => {
+    // Sign out and route to email screen so user can sign in again.
+    // After re-auth, they can come back to Profile → Delete account.
+    setShowDeleteModal(false);
+    await signOutUser();
+    router.push('/(auth)/email');
+  };
+
+  // ─────────────────────────────────────────────
+  // REMINDER TOGGLE
   // ─────────────────────────────────────────────
   const handleReminderToggle = async (nextValue) => {
     if (reminderSaving || !user) return;
@@ -137,7 +202,6 @@ export default function Profile() {
     setPermissionDenied(false);
 
     if (nextValue) {
-      // Turning ON
       const permRes = await requestPermission();
 
       if (!permRes.ok || !permRes.granted) {
@@ -148,7 +212,6 @@ export default function Profile() {
         return;
       }
 
-      // Permission granted — determine language name for the notification body
       let languageName = null;
       try {
         const activeRes = await getActiveLanguageId(user.uid);
@@ -158,25 +221,18 @@ export default function Profile() {
         }
       } catch {}
 
-      // Schedule the daily reminder
       const schedRes = await scheduleDailyReminder(languageName);
       if (!schedRes.ok) {
         setReminderSaving(false);
         return;
       }
 
-      // Save preference to Firestore
       const saveRes = await setReminderPreference(user.uid, true);
-      if (saveRes.ok) {
-        setReminderEnabled(true);
-      }
+      if (saveRes.ok) setReminderEnabled(true);
     } else {
-      // Turning OFF
       await cancelDailyReminder();
       const saveRes = await setReminderPreference(user.uid, false);
-      if (saveRes.ok) {
-        setReminderEnabled(false);
-      }
+      if (saveRes.ok) setReminderEnabled(false);
     }
 
     setReminderSaving(false);
@@ -313,7 +369,6 @@ export default function Profile() {
             )}
           </View>
 
-          {/* Permission denied notice */}
           {permissionDenied && (
             <Pressable
               style={styles.permDeniedBox}
@@ -326,7 +381,26 @@ export default function Profile() {
           )}
         </View>
 
-        {/* Actions */}
+        {/* About & Legal */}
+        <Text style={styles.sectionLabel}>ABOUT & LEGAL</Text>
+        <View style={styles.linkCard}>
+          <Pressable style={styles.linkRow} onPress={handleAbout}>
+            <Text style={styles.linkText}>About Bamba</Text>
+            <Text style={styles.linkChevron}>›</Text>
+          </Pressable>
+          <View style={styles.divider} />
+          <Pressable style={styles.linkRow} onPress={handlePrivacy}>
+            <Text style={styles.linkText}>Privacy Policy</Text>
+            <Text style={styles.linkChevron}>›</Text>
+          </Pressable>
+          <View style={styles.divider} />
+          <Pressable style={styles.linkRow} onPress={handleTerms}>
+            <Text style={styles.linkText}>Terms of Service</Text>
+            <Text style={styles.linkChevron}>›</Text>
+          </Pressable>
+        </View>
+
+        {/* Account actions */}
         <Text style={styles.sectionLabel}>ACCOUNT</Text>
 
         {isGuest ? (
@@ -342,7 +416,13 @@ export default function Profile() {
           <Text style={styles.btnSecondaryText}>Sign out</Text>
         </Pressable>
 
-        {/* Sign-out error */}
+        <Pressable
+          style={[styles.btnDangerOutline, { marginTop: Spacing.md }]}
+          onPress={handleDeleteAccountPress}
+        >
+          <Text style={styles.btnDangerOutlineText}>Delete account</Text>
+        </Pressable>
+
         {signOutError && (
           <View style={styles.errorBox}>
             <Text style={styles.errorText}>{String(signOutError)}</Text>
@@ -354,10 +434,10 @@ export default function Profile() {
 
       {/* Sign-out warning modal */}
       <Modal
-        visible={showWarning}
+        visible={showSignOutWarning}
         transparent
         animationType="fade"
-        onRequestClose={() => setShowWarning(false)}
+        onRequestClose={() => setShowSignOutWarning(false)}
       >
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
@@ -384,7 +464,7 @@ export default function Profile() {
 
                 <Pressable
                   style={styles.modalBtnSecondary}
-                  onPress={() => setShowWarning(false)}
+                  onPress={() => setShowSignOutWarning(false)}
                   disabled={signingOut}
                 >
                   <Text style={styles.modalBtnSecondaryText}>Cancel</Text>
@@ -418,8 +498,90 @@ export default function Profile() {
 
                 <Pressable
                   style={styles.modalBtnSecondary}
-                  onPress={() => setShowWarning(false)}
+                  onPress={() => setShowSignOutWarning(false)}
                   disabled={signingOut}
+                >
+                  <Text style={styles.modalBtnSecondaryText}>Cancel</Text>
+                </Pressable>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Delete account modal — now fully wired */}
+      <Modal
+        visible={showDeleteModal}
+        transparent
+        animationType="fade"
+        onRequestClose={handleCloseDeleteModal}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            {requiresReauth ? (
+              <>
+                <Text style={styles.modalTitle}>Sign in again to continue</Text>
+                <Text style={styles.modalText}>
+                  For security, you need to sign in again before deleting
+                  your account. Your data has been partly cleaned up — after
+                  signing back in, you can complete deletion from the Profile
+                  screen.
+                </Text>
+
+                <Pressable
+                  style={styles.modalBtnPrimary}
+                  onPress={handleReauthAndRetry}
+                >
+                  <Text style={styles.modalBtnPrimaryText}>
+                    Sign in again
+                  </Text>
+                </Pressable>
+
+                <Pressable
+                  style={styles.modalBtnSecondary}
+                  onPress={handleCloseDeleteModal}
+                >
+                  <Text style={styles.modalBtnSecondaryText}>Cancel</Text>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Text style={styles.modalTitle}>Delete account?</Text>
+                <Text style={styles.modalText}>
+                  This will permanently delete your account, learning
+                  progress, and contributions. This action cannot be undone.
+
+                  {'\n\n'}Anonymized language contributions may remain in the
+                  corpus per our Terms of Service.
+                </Text>
+
+                {deleteError && (
+                  <View style={styles.errorBox}>
+                    <Text style={styles.errorText}>{String(deleteError)}</Text>
+                  </View>
+                )}
+
+                <Pressable
+                  style={[
+                    styles.modalBtnDangerSolid,
+                    deleting && styles.modalBtnDisabled,
+                  ]}
+                  onPress={handleDeleteConfirm}
+                  disabled={deleting}
+                >
+                  {deleting ? (
+                    <ActivityIndicator color={Colors.text} size="small" />
+                  ) : (
+                    <Text style={styles.modalBtnDangerSolidText}>
+                      Delete my account
+                    </Text>
+                  )}
+                </Pressable>
+
+                <Pressable
+                  style={styles.modalBtnSecondary}
+                  onPress={handleCloseDeleteModal}
+                  disabled={deleting}
                 >
                   <Text style={styles.modalBtnSecondaryText}>Cancel</Text>
                 </Pressable>
@@ -568,6 +730,34 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 
+  // Link card
+  linkCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    overflow: 'hidden',
+  },
+  linkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: Spacing.xl,
+  },
+  linkText: {
+    ...Typography.body,
+    color: Colors.text,
+  },
+  linkChevron: {
+    ...Typography.h3,
+    color: Colors.textMuted,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: Colors.border,
+    marginHorizontal: Spacing.xl,
+  },
+
   // Buttons
   btnPrimary: {
     backgroundColor: Colors.primary,
@@ -589,6 +779,20 @@ const styles = StyleSheet.create({
     borderColor: Colors.borderLight,
   },
   btnSecondaryText: { ...Typography.bodyBold, color: Colors.text },
+  btnDangerOutline: {
+    backgroundColor: 'transparent',
+    paddingVertical: Spacing.lg,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 52,
+    borderWidth: 1,
+    borderColor: Colors.danger,
+  },
+  btnDangerOutlineText: {
+    ...Typography.bodyBold,
+    color: Colors.danger,
+  },
 
   // Modal
   modalBackdrop: {
@@ -640,6 +844,21 @@ const styles = StyleSheet.create({
     color: Colors.danger,
     textAlign: 'center',
     paddingVertical: Spacing.md,
+  },
+  modalBtnDangerSolid: {
+    backgroundColor: Colors.danger,
+    paddingVertical: Spacing.lg,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 48,
+  },
+  modalBtnDangerSolidText: {
+    ...Typography.bodyBold,
+    color: Colors.text,
+  },
+  modalBtnDisabled: {
+    opacity: 0.6,
   },
 
   // Fatal error card
