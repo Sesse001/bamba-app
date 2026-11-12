@@ -3,17 +3,16 @@
 //
 // Flow:
 //   1. Load the content item (from route param contentId)
-//   2. Show prompt ("Hello")
+//   2. Show prompt
 //   3. Tap "Reveal" → show translations
 //   4. Optional: "Try your own" → contribution input → submit
-//   5. Tap "Next" → mark completed, advance to next INCOMPLETE item
-//   6. OR tap "Skip" → mark as attempted, show brief notice, advance to
-//      NEXT item in order (skip doesn't complete the card)
+//   5. Tap "Next" → mark completed, advance to next incomplete/unskipped item
+//   6. OR tap "Skip" → mark as skipped, advance to next incomplete/unskipped item
 //
-// Progress writes:
-//   - markSeen on card load
-//   - markAttempt on reveal OR skip
-//   - markCompleted on "Next" only
+// Skip semantics (Interpretation B):
+//   - Skipped items are removed from the current lesson queue
+//   - Home won't show them again until "Reset skipped" is tapped
+//   - Progress counter doesn't count skipped as completed
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -38,6 +37,8 @@ import {
   markSeen,
   markAttempt,
   markCompleted,
+  markSkipped,
+  getAllProgress,
   getNextIncompleteItem,
   getNextItemAfter,
 } from '../../services/progress';
@@ -135,28 +136,6 @@ export default function Learn() {
   };
 
   // ─────────────────────────────────────────────
-  // ADVANCE TO NEXT INCOMPLETE (used by Next)
-  // ─────────────────────────────────────────────
-  const advanceToNextIncomplete = async () => {
-    const user = getCurrentUser();
-    if (!user || !content) return;
-
-    const lessonRes = await getDemoLesson(content.languageId, 10);
-    if (!lessonRes.ok) {
-      router.replace('/(tabs)/home');
-      return;
-    }
-
-    const nextRes = await getNextIncompleteItem(user.uid, lessonRes.data);
-
-    if (nextRes.ok && nextRes.next && nextRes.next.id !== content.id) {
-      loadItem(nextRes.next.id);
-    } else {
-      router.replace('/(tabs)/home');
-    }
-  };
-
-  // ─────────────────────────────────────────────
   // REVEAL
   // ─────────────────────────────────────────────
   const handleReveal = async () => {
@@ -171,7 +150,7 @@ export default function Learn() {
   };
 
   // ─────────────────────────────────────────────
-  // SKIP (advance to next item, no completion, show notice)
+  // SKIP — mark skipped + advance to next unskipped
   // ─────────────────────────────────────────────
   const handleSkip = async () => {
     if (skipping) return;
@@ -186,26 +165,32 @@ export default function Learn() {
       return;
     }
 
-    // Show brief notice
-    setSkipNotice("Skipped — we'll come back to this later.");
+    setSkipNotice("Skipped — we'll move to the next one.");
 
-    // Mark as attempted (user saw it, chose not to complete)
+    // Mark as skipped in Firestore
     try {
-      await markAttempt(user.uid, content.id);
+      await markSkipped(user.uid, content.id);
     } catch {}
 
-    // Fetch lesson to find what comes AFTER the current card
-    const lessonRes = await getDemoLesson(content.languageId, 10);
+    // Fetch lesson + progress to determine what's next
+    const [lessonRes, progressRes] = await Promise.all([
+      getDemoLesson(content.languageId, 30),
+      getAllProgress(user.uid),
+    ]);
+
     if (!lessonRes.ok) {
       setSkipping(false);
       router.replace('/(tabs)/home');
       return;
     }
 
-    // Get the next item in array order, regardless of completion
-    const nextItem = getNextItemAfter(lessonRes.data, content.id);
+    const progressMap = progressRes.ok ? progressRes.data : {};
+    const nextItem = getNextItemAfter(
+      lessonRes.data,
+      content.id,
+      progressMap
+    );
 
-    // Give the notice time to be visible before advancing
     setTimeout(() => {
       if (nextItem) {
         loadItem(nextItem.id);
@@ -216,7 +201,7 @@ export default function Learn() {
   };
 
   // ─────────────────────────────────────────────
-  // NEXT (marks completed, advances to next incomplete)
+  // NEXT — mark completed + advance to next incomplete
   // ─────────────────────────────────────────────
   const handleNext = async () => {
     const user = getCurrentUser();
@@ -228,7 +213,19 @@ export default function Learn() {
       await markCompleted(user.uid, content.id);
     } catch {}
 
-    await advanceToNextIncomplete();
+    const lessonRes = await getDemoLesson(content.languageId, 30);
+    if (!lessonRes.ok) {
+      router.replace('/(tabs)/home');
+      return;
+    }
+
+    const nextRes = await getNextIncompleteItem(user.uid, lessonRes.data);
+
+    if (nextRes.ok && nextRes.next && nextRes.next.id !== content.id) {
+      loadItem(nextRes.next.id);
+    } else {
+      router.replace('/(tabs)/home');
+    }
   };
 
   // ─────────────────────────────────────────────

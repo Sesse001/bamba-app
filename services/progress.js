@@ -3,15 +3,19 @@
 //
 // Structure:
 //   users/{uid}/progress/{contentId}
-//     seen:        boolean  — user opened the card
-//     attempts:    number   — how many times they've interacted
-//     completed:   boolean  — marked as done (via Next, not Skip)
+//     seen:        boolean   — user opened the card
+//     attempts:    number    — how many times they've interacted
+//     completed:   boolean   — marked as done (via Next)
+//     skipped:     boolean   — user explicitly skipped (via Skip)
 //     firstSeenAt: timestamp
 //     lastSeenAt:  timestamp
 //
-// contentId is the deterministic learning_content ID, e.g. "zu_greeting_hello".
-// Using contentId as the doc ID means progress is naturally unique per item
-// AND naturally isolated per language (since content IDs include the language code).
+// Skip semantics (Interpretation B):
+//   - Skipping permanently removes an item from the "current lesson"
+//   - Home shows the first unskipped + uncompleted item
+//   - resetSkipped(uid) brings all skipped items back
+//
+// contentId is the deterministic learning_content ID (e.g. "zu_greeting_hello").
 
 import {
   collection,
@@ -64,6 +68,7 @@ export async function markSeen(uid, contentId) {
         seen: true,
         attempts: 0,
         completed: false,
+        skipped: false,
         firstSeenAt: serverTimestamp(),
         lastSeenAt: serverTimestamp(),
       });
@@ -98,6 +103,7 @@ export async function markAttempt(uid, contentId) {
         seen: true,
         attempts: 1,
         completed: false,
+        skipped: false,
         firstSeenAt: serverTimestamp(),
         lastSeenAt: serverTimestamp(),
       });
@@ -134,17 +140,95 @@ export async function markCompleted(uid, contentId) {
         seen: true,
         attempts: 1,
         completed: true,
+        skipped: false,
         firstSeenAt: serverTimestamp(),
         lastSeenAt: serverTimestamp(),
       });
     } else {
       await updateDoc(ref, {
         completed: true,
+        skipped: false, // un-skip if previously skipped
         lastSeenAt: serverTimestamp(),
       });
     }
 
     return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+}
+
+/**
+ * Mark a content item as skipped.
+ * Does NOT mark as completed. Removes from the "current lesson" view.
+ */
+export async function markSkipped(uid, contentId) {
+  try {
+    if (!uid || !contentId) {
+      return { ok: false, error: 'Missing uid or contentId' };
+    }
+
+    const ref = progressDoc(uid, contentId);
+    const snap = await getDoc(ref);
+
+    if (!snap.exists()) {
+      await setDoc(ref, {
+        contentId,
+        seen: true,
+        attempts: 1,
+        completed: false,
+        skipped: true,
+        firstSeenAt: serverTimestamp(),
+        lastSeenAt: serverTimestamp(),
+      });
+    } else {
+      const current = snap.data();
+      const nextAttempts = (current.attempts || 0) + 1;
+      await updateDoc(ref, {
+        skipped: true,
+        attempts: nextAttempts,
+        lastSeenAt: serverTimestamp(),
+      });
+    }
+
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+}
+
+/**
+ * Reset all skipped items for a user, bringing them back into the lesson.
+ * Does NOT touch completed items.
+ */
+export async function resetSkipped(uid) {
+  try {
+    if (!uid) {
+      return { ok: false, error: 'Missing uid' };
+    }
+
+    const q = query(progressCol(uid));
+    const snap = await getDocs(q);
+
+    let resetCount = 0;
+    const promises = [];
+
+    snap.docs.forEach((d) => {
+      const data = d.data();
+      if (data.skipped === true) {
+        promises.push(
+          updateDoc(d.ref, {
+            skipped: false,
+            lastSeenAt: serverTimestamp(),
+          })
+        );
+        resetCount++;
+      }
+    });
+
+    await Promise.all(promises);
+
+    return { ok: true, resetCount };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
   }
@@ -201,6 +285,8 @@ export async function getAllProgress(uid) {
 
 /**
  * Summary counts for a set of content IDs.
+ * Note: total = all items, completed = completed count,
+ *       skipped = skipped count, remaining = total - completed - skipped
  */
 export async function getProgressSummary(uid, contentIds) {
   try {
@@ -213,6 +299,7 @@ export async function getProgressSummary(uid, contentIds) {
 
     let seen = 0;
     let completed = 0;
+    let skipped = 0;
     const byContentId = {};
 
     for (const id of contentIds) {
@@ -221,12 +308,20 @@ export async function getProgressSummary(uid, contentIds) {
         byContentId[id] = p;
         if (p.seen) seen++;
         if (p.completed) completed++;
+        if (p.skipped) skipped++;
       }
     }
 
     return {
       ok: true,
-      data: { seen, completed, total: contentIds.length, byContentId },
+      data: {
+        seen,
+        completed,
+        skipped,
+        total: contentIds.length,
+        remaining: contentIds.length - completed - skipped,
+        byContentId,
+      },
     };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
@@ -234,8 +329,8 @@ export async function getProgressSummary(uid, contentIds) {
 }
 
 /**
- * Given a list of content IDs, return the first one that is NOT completed.
- * Returns null if all are completed.
+ * Given a list of content items, return the first one that is NOT completed
+ * AND NOT skipped. Returns null if all are either completed or skipped.
  *
  * Used by Home for "Continue learning" and by Learn's "Next" button.
  */
@@ -253,7 +348,8 @@ export async function getNextIncompleteItem(uid, items) {
 
     for (const item of items) {
       const p = all.data[item.id];
-      if (!p || !p.completed) {
+      // Skip items that are completed OR explicitly skipped
+      if (!p || (!p.completed && !p.skipped)) {
         return { ok: true, next: item };
       }
     }
@@ -266,17 +362,28 @@ export async function getNextIncompleteItem(uid, items) {
 
 /**
  * Find the next item after the given content ID, in array order.
- * Used by Skip — advances regardless of completion status.
+ * Skips items that are completed or already skipped.
+ * Used by Skip — advances to next available item.
  *
  * @param {Array<{id: string}>} items — full content list (ordered)
  * @param {string} currentId — the current item's ID
- * @returns {object | null} — the next item, or null if last
+ * @param {object} progressByContentId — map of progress docs
+ * @returns {object | null} — the next item, or null if end
  */
-export function getNextItemAfter(items, currentId) {
+export function getNextItemAfter(items, currentId, progressByContentId = {}) {
   if (!Array.isArray(items) || items.length === 0) return null;
 
   const currentIndex = items.findIndex((i) => i.id === currentId);
   if (currentIndex === -1) return null;
 
-  return items[currentIndex + 1] || null;
+  // Walk forward from current, return first item not completed or skipped
+  for (let i = currentIndex + 1; i < items.length; i++) {
+    const item = items[i];
+    const p = progressByContentId[item.id];
+    if (!p || (!p.completed && !p.skipped)) {
+      return item;
+    }
+  }
+
+  return null;
 }

@@ -3,18 +3,21 @@
 //
 // Shows:
 //   1. Active language header (+ Contributions · Profile · Switch links)
-//   2. Continue learning — first INCOMPLETE item
-//   3. Progress — X of Y completed
+//   2. Continue learning — first unskipped, incomplete item
+//   3. Progress — X of Y completed (+ skipped count)
 //   4. Contribute — proper card section
 //
-// Performance:
-//   - Language lookups use AsyncStorage cache when possible
-//   - Content + progress queries run in parallel (Promise.all)
-//   - No "0 of 0" flash — shows skeleton until data arrives
+// Special states:
+//   - All items completed → "🎉 Lesson complete!"
+//   - All unskipped items done but some skipped → "You've skipped everything"
+//     with Reset button (calls resetSkipped)
+//   - No content → "Couldn't load lesson content"
 //
-// Notification self-heal:
-//   - On every Home load, if user has reminder enabled, re-schedule
-//     the daily notification (survives app/device restarts)
+// Performance:
+//   - Parallel queries for content + progress
+//   - Loading skeleton
+//   - Self-heals onboarded flag on user doc
+//   - Re-schedules reminder if enabled
 
 import { useState, useEffect, useCallback } from 'react';
 import {
@@ -32,7 +35,11 @@ import { db } from '../../services/firebase';
 import { Colors, Spacing, Radius, Typography } from '../../theme';
 import { getActiveLanguageId, getLanguage } from '../../services/languages';
 import { getDemoLesson } from '../../services/content';
-import { getProgressSummary, getNextIncompleteItem } from '../../services/progress';
+import {
+  getProgressSummary,
+  getNextIncompleteItem,
+  resetSkipped,
+} from '../../services/progress';
 import { getCurrentUser } from '../../services/auth';
 import { ensureReminderScheduled } from '../../services/notifications';
 
@@ -43,13 +50,23 @@ export default function Home() {
   const [language, setLanguage] = useState(null);
   const [nextItem, setNextItem] = useState(null);
   const [allComplete, setAllComplete] = useState(false);
+  const [allSkipped, setAllSkipped] = useState(false);
   const [noContent, setNoContent] = useState(false);
-  const [progress, setProgress] = useState({ seen: 0, completed: 0, total: 0 });
+  const [progress, setProgress] = useState({
+    seen: 0,
+    completed: 0,
+    skipped: 0,
+    total: 0,
+    remaining: 0,
+  });
   const [error, setError] = useState(null);
+  const [resetting, setResetting] = useState(false);
 
   const load = useCallback(async () => {
     setError(null);
     setNoContent(false);
+    setAllComplete(false);
+    setAllSkipped(false);
 
     const user = getCurrentUser();
     if (!user) {
@@ -65,9 +82,7 @@ export default function Home() {
       if (userSnap.exists() && userSnap.data().onboarded !== true) {
         await updateDoc(userRef, { onboarded: true });
       }
-    } catch {
-      // Non-fatal
-    }
+    } catch {}
 
     // 1. Active language (cache-first)
     const activeRes = await getActiveLanguageId(user.uid);
@@ -84,16 +99,13 @@ export default function Home() {
     }
     setLanguage(langRes.data);
 
-    // Re-schedule reminder if user has it enabled.
-    // Handles app reinstalls or device restarts where scheduled
-    // notifications may have been cleared.
-    // Non-fatal — fire-and-forget, Home loads regardless.
+    // Re-schedule reminder if user has it enabled
     try {
       ensureReminderScheduled(user.uid, langRes.data.name).catch(() => {});
     } catch {}
 
-    // 2. Fetch content FIRST (needed for progress query)
-    const contentRes = await getDemoLesson(activeRes.languageId, 10);
+    // 2. Fetch content FIRST (larger pool now — 30 items)
+    const contentRes = await getDemoLesson(activeRes.languageId, 30);
     if (!contentRes.ok) {
       setError('Could not load lesson content');
       setNoContent(true);
@@ -107,14 +119,20 @@ export default function Home() {
       setNoContent(true);
       setNextItem(null);
       setAllComplete(false);
-      setProgress({ seen: 0, completed: 0, total: 0 });
+      setProgress({
+        seen: 0,
+        completed: 0,
+        skipped: 0,
+        total: 0,
+        remaining: 0,
+      });
       setLoading(false);
       return;
     }
 
     const contentIds = items.map((i) => i.id);
 
-    // 3. Run progress summary + next incomplete in PARALLEL
+    // 3. Run progress + next in parallel
     const [progressRes, nextRes] = await Promise.all([
       getProgressSummary(user.uid, contentIds),
       getNextIncompleteItem(user.uid, items),
@@ -128,13 +146,27 @@ export default function Home() {
       if (nextRes.next) {
         setNextItem(nextRes.next);
         setAllComplete(false);
+        setAllSkipped(false);
       } else {
+        // No unskipped, incomplete item remains
         setNextItem(null);
-        setAllComplete(true);
+        const data = progressRes.data;
+        if (data) {
+          if (data.completed >= data.total) {
+            // Everything actually completed
+            setAllComplete(true);
+            setAllSkipped(false);
+          } else {
+            // Some/all skipped, none left to show
+            setAllComplete(false);
+            setAllSkipped(true);
+          }
+        }
       }
     } else {
       setNextItem(items[0] || null);
       setAllComplete(false);
+      setAllSkipped(false);
     }
 
     setLoading(false);
@@ -161,6 +193,20 @@ export default function Home() {
 
   const handleProfile = () => {
     router.push('/(tabs)/profile');
+  };
+
+  const handleResetSkipped = async () => {
+    if (resetting) return;
+
+    const user = getCurrentUser();
+    if (!user) return;
+
+    setResetting(true);
+    try {
+      await resetSkipped(user.uid);
+      await load();
+    } catch {}
+    setResetting(false);
   };
 
   // ─────────────────────────────────────────────
@@ -344,6 +390,29 @@ export default function Home() {
               You've finished all {progress.total} items in this set.
             </Text>
           </View>
+        ) : allSkipped ? (
+          <View style={styles.skippedCard}>
+            <Text style={styles.skippedEmoji}>⏭️</Text>
+            <Text style={styles.skippedTitle}>
+              You've skipped everything
+            </Text>
+            <Text style={styles.skippedText}>
+              You skipped {progress.skipped}{' '}
+              {progress.skipped === 1 ? 'card' : 'cards'}. Want to bring them
+              back and try again?
+            </Text>
+            <Pressable
+              style={[styles.resetBtn, resetting && styles.btnDisabled]}
+              onPress={handleResetSkipped}
+              disabled={resetting}
+            >
+              {resetting ? (
+                <ActivityIndicator color={Colors.text} size="small" />
+              ) : (
+                <Text style={styles.resetBtnText}>Bring back skipped cards</Text>
+              )}
+            </Pressable>
+          </View>
         ) : (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyText}>No lesson content available yet.</Text>
@@ -374,7 +443,8 @@ export default function Home() {
             />
           </View>
           <Text style={styles.progressDetail}>
-            {progress.seen} seen · {Math.max(progress.total - progress.seen, 0)} new
+            {progress.seen} seen · {progress.skipped} skipped ·{' '}
+            {Math.max(progress.remaining, 0)} remaining
           </Text>
         </View>
 
@@ -418,7 +488,6 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   content: { paddingHorizontal: Spacing.xl, paddingVertical: Spacing.xxl },
 
-  // Header
   headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -459,7 +528,6 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
   },
 
-  // Section label
   sectionLabel: {
     ...Typography.label,
     color: Colors.textSecondary,
@@ -467,7 +535,6 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.md,
   },
 
-  // Continue card
   continueCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -503,7 +570,6 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
 
-  // Complete card
   completeCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -524,7 +590,42 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 
-  // Error card
+  skippedCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.xl,
+    borderWidth: 2,
+    borderColor: Colors.warning,
+    alignItems: 'center',
+  },
+  skippedEmoji: { fontSize: 48, marginBottom: Spacing.md },
+  skippedTitle: {
+    ...Typography.h2,
+    color: Colors.text,
+    marginBottom: Spacing.xs,
+  },
+  skippedText: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: Spacing.lg,
+    lineHeight: 20,
+  },
+  resetBtn: {
+    backgroundColor: Colors.primary,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.xxl,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 48,
+  },
+  resetBtnText: {
+    ...Typography.bodyBold,
+    color: Colors.text,
+  },
+  btnDisabled: { opacity: 0.6 },
+
   errorCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -558,7 +659,6 @@ const styles = StyleSheet.create({
     color: Colors.primaryLight,
   },
 
-  // Empty
   emptyCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -569,7 +669,6 @@ const styles = StyleSheet.create({
   },
   emptyText: { ...Typography.caption, color: Colors.textSecondary },
 
-  // Progress
   progressCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -604,7 +703,6 @@ const styles = StyleSheet.create({
   },
   progressDetail: { ...Typography.tiny, color: Colors.textMuted },
 
-  // Contribute
   contributeCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -624,7 +722,6 @@ const styles = StyleSheet.create({
   },
   contributeText: { ...Typography.caption, color: Colors.textSecondary },
 
-  // Error
   errorBox: {
     marginTop: Spacing.lg,
     padding: Spacing.md,
@@ -639,7 +736,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 
-  // Skeleton styles
   skeletonBar: {
     backgroundColor: Colors.surfaceLight,
     borderRadius: Radius.sm,
