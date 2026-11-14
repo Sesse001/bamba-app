@@ -1,21 +1,25 @@
 // services/progress.js
-// Tracks per-user progress on learning content.
+// Tracks per-user progress on learning content + tier progression.
 //
-// Structure:
+// Schema (per progress doc):
 //   users/{uid}/progress/{contentId}
-//     seen:        boolean   — user opened the card
-//     attempts:    number    — how many times they've interacted
-//     completed:   boolean   — marked as done (via Next)
-//     skipped:     boolean   — user explicitly skipped (via Skip)
-//     firstSeenAt: timestamp
-//     lastSeenAt:  timestamp
+//     seen, attempts, completed, skipped, firstSeenAt, lastSeenAt
 //
-// Skip semantics (Interpretation B):
-//   - Skipping permanently removes an item from the "current lesson"
-//   - Home shows the first unskipped + uncompleted item
-//   - resetSkipped(uid) brings all skipped items back
+// Tier model:
+//   - Content items have a `tier` field (1-4)
+//   - 25 items per tier per language
+//   - User progresses tier by tier
+//   - "Complete" means item is either completed OR skipped
+//   - Current tier is computed from actual progress (no schema field needed)
 //
-// contentId is the deterministic learning_content ID (e.g. "zu_greeting_hello").
+// Progress integrity:
+//   - markSkipped guards against re-skipping completed items
+//   - markCompleted clears skipped status (completing a previously-skipped item)
+//
+// Redo skipped:
+//   - Only available after ALL tiers are complete
+//   - resetSkipped() clears all skipped flags
+//   - getTotalSkippedAcrossTiers() counts for the "Redo X cards" display
 
 import {
   collection,
@@ -49,10 +53,6 @@ function progressDoc(uid, contentId) {
 // MARK EVENTS
 // ─────────────────────────────────────────────────────────────
 
-/**
- * Mark a content item as seen. Creates the progress doc if it doesn't exist.
- * Idempotent — safe to call repeatedly.
- */
 export async function markSeen(uid, contentId) {
   try {
     if (!uid || !contentId) {
@@ -85,9 +85,6 @@ export async function markSeen(uid, contentId) {
   }
 }
 
-/**
- * Increment attempts counter and update lastSeenAt.
- */
 export async function markAttempt(uid, contentId) {
   try {
     if (!uid || !contentId) {
@@ -122,9 +119,6 @@ export async function markAttempt(uid, contentId) {
   }
 }
 
-/**
- * Mark a content item as completed.
- */
 export async function markCompleted(uid, contentId) {
   try {
     if (!uid || !contentId) {
@@ -147,7 +141,7 @@ export async function markCompleted(uid, contentId) {
     } else {
       await updateDoc(ref, {
         completed: true,
-        skipped: false, // un-skip if previously skipped
+        skipped: false,
         lastSeenAt: serverTimestamp(),
       });
     }
@@ -160,7 +154,7 @@ export async function markCompleted(uid, contentId) {
 
 /**
  * Mark a content item as skipped.
- * Does NOT mark as completed. Removes from the "current lesson" view.
+ * Guard: if item is already completed, no-op (returns { noop: true }).
  */
 export async function markSkipped(uid, contentId) {
   try {
@@ -183,6 +177,11 @@ export async function markSkipped(uid, contentId) {
       });
     } else {
       const current = snap.data();
+
+      if (current.completed === true) {
+        return { ok: true, noop: true, reason: 'already-completed' };
+      }
+
       const nextAttempts = (current.attempts || 0) + 1;
       await updateDoc(ref, {
         skipped: true,
@@ -198,8 +197,9 @@ export async function markSkipped(uid, contentId) {
 }
 
 /**
- * Reset all skipped items for a user, bringing them back into the lesson.
- * Does NOT touch completed items.
+ * Reset all skipped items for a user (global).
+ * Only meant to be called from Home when ALL tiers are complete.
+ * Clears skipped flags across all tiers. Completed items unaffected.
  */
 export async function resetSkipped(uid) {
   try {
@@ -238,9 +238,6 @@ export async function resetSkipped(uid) {
 // READ
 // ─────────────────────────────────────────────────────────────
 
-/**
- * Get progress for a single content item.
- */
 export async function getProgress(uid, contentId) {
   try {
     if (!uid || !contentId) {
@@ -260,9 +257,6 @@ export async function getProgress(uid, contentId) {
   }
 }
 
-/**
- * Get all progress docs for a user, keyed by contentId.
- */
 export async function getAllProgress(uid) {
   try {
     if (!uid) {
@@ -283,11 +277,6 @@ export async function getAllProgress(uid) {
   }
 }
 
-/**
- * Summary counts for a set of content IDs.
- * Note: total = all items, completed = completed count,
- *       skipped = skipped count, remaining = total - completed - skipped
- */
 export async function getProgressSummary(uid, contentIds) {
   try {
     if (!uid || !Array.isArray(contentIds)) {
@@ -328,12 +317,6 @@ export async function getProgressSummary(uid, contentIds) {
   }
 }
 
-/**
- * Given a list of content items, return the first one that is NOT completed
- * AND NOT skipped. Returns null if all are either completed or skipped.
- *
- * Used by Home for "Continue learning" and by Learn's "Next" button.
- */
 export async function getNextIncompleteItem(uid, items) {
   try {
     if (!uid || !Array.isArray(items)) {
@@ -348,7 +331,6 @@ export async function getNextIncompleteItem(uid, items) {
 
     for (const item of items) {
       const p = all.data[item.id];
-      // Skip items that are completed OR explicitly skipped
       if (!p || (!p.completed && !p.skipped)) {
         return { ok: true, next: item };
       }
@@ -360,23 +342,12 @@ export async function getNextIncompleteItem(uid, items) {
   }
 }
 
-/**
- * Find the next item after the given content ID, in array order.
- * Skips items that are completed or already skipped.
- * Used by Skip — advances to next available item.
- *
- * @param {Array<{id: string}>} items — full content list (ordered)
- * @param {string} currentId — the current item's ID
- * @param {object} progressByContentId — map of progress docs
- * @returns {object | null} — the next item, or null if end
- */
 export function getNextItemAfter(items, currentId, progressByContentId = {}) {
   if (!Array.isArray(items) || items.length === 0) return null;
 
   const currentIndex = items.findIndex((i) => i.id === currentId);
   if (currentIndex === -1) return null;
 
-  // Walk forward from current, return first item not completed or skipped
   for (let i = currentIndex + 1; i < items.length; i++) {
     const item = items[i];
     const p = progressByContentId[item.id];
@@ -386,4 +357,138 @@ export function getNextItemAfter(items, currentId, progressByContentId = {}) {
   }
 
   return null;
+}
+
+// ─────────────────────────────────────────────────────────────
+// TIER LOGIC
+// ─────────────────────────────────────────────────────────────
+
+export function getTierItems(items, tier) {
+  if (!Array.isArray(items)) return [];
+  return items.filter((i) => i.tier === tier);
+}
+
+export async function getTierProgressSummary(uid, allItems, tier) {
+  try {
+    const tierItems = getTierItems(allItems, tier);
+    if (tierItems.length === 0) {
+      return {
+        ok: true,
+        data: {
+          seen: 0,
+          completed: 0,
+          skipped: 0,
+          total: 0,
+          remaining: 0,
+          isComplete: false,
+        },
+      };
+    }
+
+    const tierIds = tierItems.map((i) => i.id);
+    const summaryRes = await getProgressSummary(uid, tierIds);
+    if (!summaryRes.ok) return summaryRes;
+
+    const s = summaryRes.data;
+    const isComplete = s.total > 0 && s.completed + s.skipped >= s.total;
+
+    return {
+      ok: true,
+      data: {
+        seen: s.seen,
+        completed: s.completed,
+        skipped: s.skipped,
+        total: s.total,
+        remaining: s.remaining,
+        isComplete,
+      },
+    };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+}
+
+export async function getCurrentTier(uid, allItems) {
+  try {
+    if (!uid || !Array.isArray(allItems) || allItems.length === 0) {
+      return {
+        ok: true,
+        data: { tier: 1, isAllComplete: false, tierComplete: null },
+      };
+    }
+
+    const tiersPresent = [
+      ...new Set(
+        allItems.map((i) => i.tier).filter((t) => typeof t === 'number')
+      ),
+    ].sort((a, b) => a - b);
+
+    if (tiersPresent.length === 0) {
+      return {
+        ok: true,
+        data: { tier: 1, isAllComplete: false, tierComplete: null },
+      };
+    }
+
+    let previousTierComplete = null;
+
+    for (const tier of tiersPresent) {
+      const tierSummaryRes = await getTierProgressSummary(uid, allItems, tier);
+      if (!tierSummaryRes.ok) return tierSummaryRes;
+
+      const tierSummary = tierSummaryRes.data;
+
+      if (!tierSummary.isComplete) {
+        return {
+          ok: true,
+          data: {
+            tier,
+            isAllComplete: false,
+            tierComplete: previousTierComplete,
+          },
+        };
+      }
+
+      previousTierComplete = tier;
+    }
+
+    return {
+      ok: true,
+      data: {
+        tier: tiersPresent[tiersPresent.length - 1],
+        isAllComplete: true,
+        tierComplete: previousTierComplete,
+      },
+    };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+}
+
+/**
+ * Count total skipped items across ALL tiers for a language.
+ * Used by Home to decide whether to show "Redo skipped cards" after
+ * all tiers are complete.
+ */
+export async function getTotalSkippedAcrossTiers(uid, allItems) {
+  try {
+    if (!uid || !Array.isArray(allItems)) {
+      return { ok: false, error: 'Missing uid or items' };
+    }
+
+    const all = await getAllProgress(uid);
+    if (!all.ok) return all;
+
+    let count = 0;
+    for (const item of allItems) {
+      const p = all.data[item.id];
+      if (p && p.skipped === true) {
+        count++;
+      }
+    }
+
+    return { ok: true, count };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
 }

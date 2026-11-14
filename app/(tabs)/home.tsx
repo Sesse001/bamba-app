@@ -1,23 +1,15 @@
 // app/(tabs)/home.tsx
-// Home dashboard — the hub after a language is picked.
+// Home dashboard — tiered learning hub.
 //
-// Shows:
-//   1. Active language header (+ Contributions · Profile · Switch links)
-//   2. Continue learning — first unskipped, incomplete item
-//   3. Progress — X of Y completed (+ skipped count)
-//   4. Contribute — proper card section
+// Progress display:
+//   - "X of N resolved" (completed + skipped, what unlocks next tier)
+//   - Breakdown: "A completed · B skipped · C remaining"
+//   - Stacked bar: green (completed) + amber (skipped) + empty (remaining)
 //
-// Special states:
-//   - All items completed → "🎉 Lesson complete!"
-//   - All unskipped items done but some skipped → "You've skipped everything"
-//     with Reset button (calls resetSkipped)
-//   - No content → "Couldn't load lesson content"
-//
-// Performance:
-//   - Parallel queries for content + progress
-//   - Loading skeleton
-//   - Self-heals onboarded flag on user doc
-//   - Re-schedules reminder if enabled
+// Reset skipped:
+//   - Only available AFTER all 4 tiers are complete
+//   - "Redo X skipped cards" appears in the all-tiers-complete state
+//   - Mid-tier "all skipped" state shows informational text only
 
 import { useState, useEffect, useCallback } from 'react';
 import {
@@ -27,6 +19,7 @@ import {
   StyleSheet,
   ActivityIndicator,
   ScrollView,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -34,10 +27,13 @@ import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../../services/firebase';
 import { Colors, Spacing, Radius, Typography } from '../../theme';
 import { getActiveLanguageId, getLanguage } from '../../services/languages';
-import { getDemoLesson } from '../../services/content';
+import { getFullLessonPool } from '../../services/content';
 import {
-  getProgressSummary,
+  getCurrentTier,
+  getTierItems,
+  getTierProgressSummary,
   getNextIncompleteItem,
+  getTotalSkippedAcrossTiers,
   resetSkipped,
 } from '../../services/progress';
 import { getCurrentUser } from '../../services/auth';
@@ -49,24 +45,33 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [language, setLanguage] = useState(null);
   const [nextItem, setNextItem] = useState(null);
-  const [allComplete, setAllComplete] = useState(false);
-  const [allSkipped, setAllSkipped] = useState(false);
-  const [noContent, setNoContent] = useState(false);
-  const [progress, setProgress] = useState({
+  const [currentTier, setCurrentTier] = useState(1);
+  const [totalTiers, setTotalTiers] = useState(4);
+  const [tierProgress, setTierProgress] = useState({
     seen: 0,
     completed: 0,
     skipped: 0,
     total: 0,
     remaining: 0,
+    isComplete: false,
   });
+  const [allTiersComplete, setAllTiersComplete] = useState(false);
+  const [justCompletedTier, setJustCompletedTier] = useState(null);
+  const [allSkipped, setAllSkipped] = useState(false);
+  const [totalSkippedAcross, setTotalSkippedAcross] = useState(0);
+  const [noContent, setNoContent] = useState(false);
   const [error, setError] = useState(null);
   const [resetting, setResetting] = useState(false);
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [resetSuccessMessage, setResetSuccessMessage] = useState(null);
 
   const load = useCallback(async () => {
     setError(null);
     setNoContent(false);
-    setAllComplete(false);
+    setAllTiersComplete(false);
     setAllSkipped(false);
+    setJustCompletedTier(null);
+    setTotalSkippedAcross(0);
 
     const user = getCurrentUser();
     if (!user) {
@@ -75,7 +80,6 @@ export default function Home() {
       return;
     }
 
-    // Self-healing: ensure onboarded flag on user doc
     try {
       const userRef = doc(db, 'users', user.uid);
       const userSnap = await getDoc(userRef);
@@ -84,7 +88,6 @@ export default function Home() {
       }
     } catch {}
 
-    // 1. Active language (cache-first)
     const activeRes = await getActiveLanguageId(user.uid);
     if (!activeRes.ok || !activeRes.languageId) {
       router.replace('/(tabs)');
@@ -99,13 +102,11 @@ export default function Home() {
     }
     setLanguage(langRes.data);
 
-    // Re-schedule reminder if user has it enabled
     try {
       ensureReminderScheduled(user.uid, langRes.data.name).catch(() => {});
     } catch {}
 
-    // 2. Fetch content FIRST (larger pool now — 30 items)
-    const contentRes = await getDemoLesson(activeRes.languageId, 30);
+    const contentRes = await getFullLessonPool(activeRes.languageId);
     if (!contentRes.ok) {
       setError('Could not load lesson content');
       setNoContent(true);
@@ -113,60 +114,68 @@ export default function Home() {
       return;
     }
 
-    const items = contentRes.data || [];
+    const allItems = contentRes.data || [];
 
-    if (items.length === 0) {
+    if (allItems.length === 0) {
       setNoContent(true);
       setNextItem(null);
-      setAllComplete(false);
-      setProgress({
-        seen: 0,
-        completed: 0,
-        skipped: 0,
-        total: 0,
-        remaining: 0,
-      });
       setLoading(false);
       return;
     }
 
-    const contentIds = items.map((i) => i.id);
+    const tiersPresent = [
+      ...new Set(allItems.map((i) => i.tier).filter((t) => typeof t === 'number')),
+    ].sort((a, b) => a - b);
+    setTotalTiers(tiersPresent.length || 4);
 
-    // 3. Run progress + next in parallel
-    const [progressRes, nextRes] = await Promise.all([
-      getProgressSummary(user.uid, contentIds),
-      getNextIncompleteItem(user.uid, items),
-    ]);
-
-    if (progressRes.ok) {
-      setProgress(progressRes.data);
+    const skippedRes = await getTotalSkippedAcrossTiers(user.uid, allItems);
+    if (skippedRes.ok) {
+      setTotalSkippedAcross(skippedRes.count || 0);
     }
 
+    const tierRes = await getCurrentTier(user.uid, allItems);
+    if (!tierRes.ok) {
+      setError('Could not determine progress');
+      setLoading(false);
+      return;
+    }
+
+    const { tier: userTier, isAllComplete, tierComplete } = tierRes.data;
+
+    setCurrentTier(userTier);
+    setAllTiersComplete(isAllComplete);
+    setJustCompletedTier(tierComplete);
+
+    if (isAllComplete) {
+      setNextItem(null);
+      setLoading(false);
+      return;
+    }
+
+    const tierItems = getTierItems(allItems, userTier);
+    const tierSummaryRes = await getTierProgressSummary(
+      user.uid,
+      allItems,
+      userTier
+    );
+    if (tierSummaryRes.ok) {
+      setTierProgress(tierSummaryRes.data);
+    }
+
+    const nextRes = await getNextIncompleteItem(user.uid, tierItems);
     if (nextRes.ok) {
       if (nextRes.next) {
         setNextItem(nextRes.next);
-        setAllComplete(false);
         setAllSkipped(false);
       } else {
-        // No unskipped, incomplete item remains
         setNextItem(null);
-        const data = progressRes.data;
-        if (data) {
-          if (data.completed >= data.total) {
-            // Everything actually completed
-            setAllComplete(true);
-            setAllSkipped(false);
-          } else {
-            // Some/all skipped, none left to show
-            setAllComplete(false);
-            setAllSkipped(true);
-          }
+        const summary = tierSummaryRes.ok ? tierSummaryRes.data : null;
+        if (summary && summary.completed >= summary.total) {
+          setAllSkipped(false);
+        } else if (summary && summary.skipped > 0) {
+          setAllSkipped(true);
         }
       }
-    } else {
-      setNextItem(items[0] || null);
-      setAllComplete(false);
-      setAllSkipped(false);
     }
 
     setLoading(false);
@@ -195,23 +204,34 @@ export default function Home() {
     router.push('/(tabs)/profile');
   };
 
-  const handleResetSkipped = async () => {
+  const handleResetSkippedPress = () => {
+    setShowResetModal(true);
+  };
+
+  const handleResetSkippedConfirm = async () => {
     if (resetting) return;
 
     const user = getCurrentUser();
     if (!user) return;
 
+    setShowResetModal(false);
     setResetting(true);
     try {
-      await resetSkipped(user.uid);
-      await load();
+      const result = await resetSkipped(user.uid);
+      if (result.ok) {
+        const count = result.resetCount || 0;
+        setResetSuccessMessage(
+          count > 0
+            ? `${count} skipped ${count === 1 ? 'card' : 'cards'} restored. You're back at Tier 1.`
+            : 'No skipped cards to restore.'
+        );
+        setTimeout(() => setResetSuccessMessage(null), 5000);
+        await load();
+      }
     } catch {}
     setResetting(false);
   };
 
-  // ─────────────────────────────────────────────
-  // LOADING SKELETON
-  // ─────────────────────────────────────────────
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -265,52 +285,28 @@ export default function Home() {
             />
           </View>
 
-          <View
-            style={[
-              styles.skeletonBar,
-              {
-                width: 90,
-                height: 10,
-                marginTop: Spacing.xxl,
-                marginBottom: Spacing.md,
-              },
-            ]}
-          />
-
-          <View style={styles.skeletonCard}>
-            <View
-              style={[styles.skeletonBar, { width: '50%', height: 32 }]}
-            />
-            <View
-              style={[
-                styles.skeletonBar,
-                { width: '100%', height: 8, marginTop: 16 },
-              ]}
-            />
-            <View
-              style={[
-                styles.skeletonBar,
-                { width: '40%', height: 10, marginTop: 12 },
-              ]}
-            />
-          </View>
-
           <Text style={styles.skeletonHint}>Loading your language…</Text>
         </ScrollView>
       </SafeAreaView>
     );
   }
 
-  // ─────────────────────────────────────────────
-  // NORMAL RENDER
-  // ─────────────────────────────────────────────
+  const resolvedCount = tierProgress.completed + tierProgress.skipped;
+  const completedPct = tierProgress.total > 0
+    ? (tierProgress.completed / tierProgress.total) * 100
+    : 0;
+  const skippedPct = tierProgress.total > 0
+    ? (tierProgress.skipped / tierProgress.total) * 100
+    : 0;
+
+  const showRedoSkipped = allTiersComplete && totalSkippedAcross > 0;
+
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* 1. Header */}
         <View style={styles.headerRow}>
           <View style={styles.headerLeft}>
             <Text style={styles.headerLabel}>LEARNING</Text>
@@ -346,7 +342,33 @@ export default function Home() {
           </View>
         </View>
 
-        {/* 2. Continue learning */}
+        {!allTiersComplete && (
+          <View style={styles.tierBadgeRow}>
+            <View style={styles.tierBadge}>
+              <Text style={styles.tierBadgeText}>
+                Tier {currentTier} of {totalTiers}
+              </Text>
+            </View>
+          </View>
+        )}
+
+        {resetSuccessMessage && (
+          <View style={styles.resetSuccessBanner}>
+            <Text style={styles.resetSuccessText}>
+              ✅ {resetSuccessMessage}
+            </Text>
+          </View>
+        )}
+
+        {justCompletedTier && !allTiersComplete && (
+          <View style={styles.tierCompleteBanner}>
+            <Text style={styles.tierCompleteEmoji}>🎉</Text>
+            <Text style={styles.tierCompleteText}>
+              Tier {justCompletedTier} complete! Tier {currentTier} unlocked.
+            </Text>
+          </View>
+        )}
+
         <Text style={styles.sectionLabel}>CONTINUE LEARNING</Text>
 
         {noContent ? (
@@ -361,6 +383,21 @@ export default function Home() {
             <Pressable style={styles.errorRetryBtn} onPress={load}>
               <Text style={styles.errorRetryText}>Retry</Text>
             </Pressable>
+          </View>
+        ) : allTiersComplete ? (
+          <View style={styles.completeCard}>
+            <Text style={styles.completeEmoji}>🏆</Text>
+            <Text style={styles.completeTitle}>All tiers complete!</Text>
+            <Text style={styles.completeText}>
+              You've finished every item across all {totalTiers} tiers in{' '}
+              {language?.name}. Amazing work.
+            </Text>
+            {totalSkippedAcross > 0 && (
+              <Text style={styles.completeSubtext}>
+                You skipped {totalSkippedAcross}{' '}
+                {totalSkippedAcross === 1 ? 'card' : 'cards'} along the way.
+              </Text>
+            )}
           </View>
         ) : nextItem ? (
           <Pressable
@@ -382,36 +419,19 @@ export default function Home() {
               <Text style={styles.continueArrowText}>→</Text>
             </View>
           </Pressable>
-        ) : allComplete ? (
-          <View style={styles.completeCard}>
-            <Text style={styles.completeEmoji}>🎉</Text>
-            <Text style={styles.completeTitle}>Lesson complete!</Text>
-            <Text style={styles.completeText}>
-              You've finished all {progress.total} items in this set.
-            </Text>
-          </View>
         ) : allSkipped ? (
           <View style={styles.skippedCard}>
             <Text style={styles.skippedEmoji}>⏭️</Text>
             <Text style={styles.skippedTitle}>
-              You've skipped everything
+              You've skipped everything in Tier {currentTier}
             </Text>
             <Text style={styles.skippedText}>
-              You skipped {progress.skipped}{' '}
-              {progress.skipped === 1 ? 'card' : 'cards'}. Want to bring them
-              back and try again?
+              You skipped {tierProgress.skipped}{' '}
+              {tierProgress.skipped === 1 ? 'card' : 'cards'} in this tier.
             </Text>
-            <Pressable
-              style={[styles.resetBtn, resetting && styles.btnDisabled]}
-              onPress={handleResetSkipped}
-              disabled={resetting}
-            >
-              {resetting ? (
-                <ActivityIndicator color={Colors.text} size="small" />
-              ) : (
-                <Text style={styles.resetBtnText}>Bring back skipped cards</Text>
-              )}
-            </Pressable>
+            <Text style={styles.skippedHint}>
+              You can revisit these after completing all {totalTiers} tiers.
+            </Text>
           </View>
         ) : (
           <View style={styles.emptyCard}>
@@ -419,36 +439,62 @@ export default function Home() {
           </View>
         )}
 
-        {/* 3. Progress */}
-        <Text style={styles.sectionLabel}>PROGRESS</Text>
-        <View style={styles.progressCard}>
-          <View style={styles.progressRow}>
-            <Text style={styles.progressNumber}>
-              {progress.completed}
-              <Text style={styles.progressOf}> of {progress.total}</Text>
+        {showRedoSkipped && (
+          <Pressable
+            style={[styles.redoBtn, resetting && styles.btnDisabled]}
+            onPress={handleResetSkippedPress}
+            disabled={resetting}
+          >
+            <Text style={styles.redoBtnText}>
+              🔄 Redo {totalSkippedAcross} skipped{' '}
+              {totalSkippedAcross === 1 ? 'card' : 'cards'}
             </Text>
-            <Text style={styles.progressLabel}>completed</Text>
-          </View>
-          <View style={styles.progressBarWrap}>
-            <View
-              style={[
-                styles.progressBarFill,
-                {
-                  width:
-                    progress.total > 0
-                      ? `${(progress.completed / progress.total) * 100}%`
-                      : '0%',
-                },
-              ]}
-            />
-          </View>
-          <Text style={styles.progressDetail}>
-            {progress.seen} seen · {progress.skipped} skipped ·{' '}
-            {Math.max(progress.remaining, 0)} remaining
-          </Text>
-        </View>
+          </Pressable>
+        )}
 
-        {/* 4. Contribute */}
+        {!allTiersComplete && (
+          <>
+            <Text style={styles.sectionLabel}>
+              TIER {currentTier} PROGRESS
+            </Text>
+            <View style={styles.progressCard}>
+              <View style={styles.progressRow}>
+                <Text style={styles.progressNumber}>
+                  {resolvedCount}
+                  <Text style={styles.progressOf}>
+                    {' '}
+                    of {tierProgress.total}
+                  </Text>
+                </Text>
+                <Text style={styles.progressLabel}>resolved</Text>
+              </View>
+
+              <View style={styles.stackedBarWrap}>
+                <View
+                  style={[
+                    styles.stackedBarCompleted,
+                    { width: `${completedPct}%` },
+                  ]}
+                />
+                <View
+                  style={[
+                    styles.stackedBarSkipped,
+                    {
+                      width: `${skippedPct}%`,
+                      left: `${completedPct}%`,
+                    },
+                  ]}
+                />
+              </View>
+
+              <Text style={styles.progressDetail}>
+                {tierProgress.completed} completed · {tierProgress.skipped}{' '}
+                skipped · {Math.max(tierProgress.remaining, 0)} remaining
+              </Text>
+            </View>
+          </>
+        )}
+
         <Text style={styles.sectionLabel}>CONTRIBUTE</Text>
         <Pressable
           style={styles.contributeCard}
@@ -480,6 +526,52 @@ export default function Home() {
 
         <View style={{ height: Spacing.huge }} />
       </ScrollView>
+
+      <Modal
+        visible={showResetModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowResetModal(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Redo skipped cards?</Text>
+            <Text style={styles.modalText}>
+              You've completed all {totalTiers} tiers. This will bring back{' '}
+              {totalSkippedAcross}{' '}
+              {totalSkippedAcross === 1 ? 'card' : 'cards'} you skipped along
+              the way.
+            </Text>
+            <Text style={styles.modalWarning}>
+              Heads up: your current tier will return to Tier 1, and you'll
+              work through the restored cards again. The completed items stay
+              completed.
+            </Text>
+
+            <Pressable
+              style={styles.modalBtnPrimary}
+              onPress={handleResetSkippedConfirm}
+              disabled={resetting}
+            >
+              {resetting ? (
+                <ActivityIndicator color={Colors.text} size="small" />
+              ) : (
+                <Text style={styles.modalBtnPrimaryText}>
+                  Redo skipped cards
+                </Text>
+              )}
+            </Pressable>
+
+            <Pressable
+              style={styles.modalBtnSecondary}
+              onPress={() => setShowResetModal(false)}
+              disabled={resetting}
+            >
+              <Text style={styles.modalBtnSecondaryText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -492,7 +584,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: Spacing.xxl,
+    marginBottom: Spacing.lg,
     gap: Spacing.md,
   },
   headerLeft: { flex: 1 },
@@ -528,10 +620,60 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
   },
 
+  tierBadgeRow: { marginBottom: Spacing.lg },
+  tierBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: Colors.primaryGlow,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+  },
+  tierBadgeText: {
+    ...Typography.tiny,
+    color: Colors.primaryLight,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+
+  resetSuccessBanner: {
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.success,
+    marginBottom: Spacing.lg,
+  },
+  resetSuccessText: {
+    ...Typography.caption,
+    color: Colors.success,
+    textAlign: 'center',
+    fontWeight: '600',
+  },
+
+  tierCompleteBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.success,
+    gap: Spacing.sm,
+    marginBottom: Spacing.lg,
+  },
+  tierCompleteEmoji: { fontSize: 24 },
+  tierCompleteText: {
+    ...Typography.bodyBold,
+    color: Colors.success,
+    flex: 1,
+  },
+
   sectionLabel: {
     ...Typography.label,
     color: Colors.textSecondary,
-    marginTop: Spacing.xxl,
+    marginTop: Spacing.lg,
     marginBottom: Spacing.md,
   },
 
@@ -589,6 +731,13 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     textAlign: 'center',
   },
+  completeSubtext: {
+    ...Typography.caption,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    marginTop: Spacing.sm,
+    fontStyle: 'italic',
+  },
 
   skippedCard: {
     backgroundColor: Colors.surface,
@@ -603,26 +752,35 @@ const styles = StyleSheet.create({
     ...Typography.h2,
     color: Colors.text,
     marginBottom: Spacing.xs,
+    textAlign: 'center',
   },
   skippedText: {
     ...Typography.caption,
     color: Colors.textSecondary,
     textAlign: 'center',
-    marginBottom: Spacing.lg,
+    marginBottom: Spacing.sm,
     lineHeight: 20,
   },
-  resetBtn: {
-    backgroundColor: Colors.primary,
-    paddingVertical: Spacing.md,
-    paddingHorizontal: Spacing.xxl,
+  skippedHint: {
+    ...Typography.caption,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    fontStyle: 'italic',
+    lineHeight: 20,
+  },
+
+  redoBtn: {
+    backgroundColor: Colors.warning,
+    paddingVertical: Spacing.lg,
     borderRadius: Radius.md,
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 48,
+    minHeight: 52,
+    marginTop: Spacing.lg,
   },
-  resetBtnText: {
+  redoBtnText: {
     ...Typography.bodyBold,
-    color: Colors.text,
+    color: Colors.textInverse,
   },
   btnDisabled: { opacity: 0.6 },
 
@@ -689,17 +847,26 @@ const styles = StyleSheet.create({
     fontWeight: '400',
   },
   progressLabel: { ...Typography.caption, color: Colors.textSecondary },
-  progressBarWrap: {
+  stackedBarWrap: {
     height: 8,
     borderRadius: 4,
     backgroundColor: Colors.surfaceLight,
     overflow: 'hidden',
     marginBottom: Spacing.sm,
+    position: 'relative',
   },
-  progressBarFill: {
+  stackedBarCompleted: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
     height: '100%',
-    backgroundColor: Colors.primary,
-    borderRadius: 4,
+    backgroundColor: Colors.success,
+  },
+  stackedBarSkipped: {
+    position: 'absolute',
+    top: 0,
+    height: '100%',
+    backgroundColor: Colors.warning,
   },
   progressDetail: { ...Typography.tiny, color: Colors.textMuted },
 
@@ -754,4 +921,61 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: Spacing.xxl,
   },
+
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: Spacing.xl,
+  },
+  modalCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.xl,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    width: '100%',
+    maxWidth: 420,
+    gap: Spacing.md,
+  },
+  modalTitle: { ...Typography.h3, color: Colors.text },
+  modalText: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    lineHeight: 20,
+  },
+  modalWarning: {
+    ...Typography.caption,
+    color: Colors.warning,
+    lineHeight: 20,
+    padding: Spacing.md,
+    borderRadius: Radius.md,
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    borderWidth: 1,
+    borderColor: Colors.warning,
+  },
+  modalBtnPrimary: {
+    backgroundColor: Colors.warning,
+    paddingVertical: Spacing.lg,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 48,
+  },
+  modalBtnPrimaryText: {
+    ...Typography.bodyBold,
+    color: Colors.textInverse,
+  },
+  modalBtnSecondary: {
+    backgroundColor: Colors.surfaceLight,
+    paddingVertical: Spacing.lg,
+    borderRadius: Radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 48,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+  },
+  modalBtnSecondaryText: { ...Typography.bodyBold, color: Colors.text },
 });

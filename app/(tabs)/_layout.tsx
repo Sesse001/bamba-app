@@ -18,6 +18,7 @@ export default function TabLayout() {
       <Tabs.Screen name="contributions" />
       <Tabs.Screen name="profile" />
       <Tabs.Screen name="about" />
+      <Tabs.Screen name="tier-detail" />
       <Tabs.Screen name="explore" />
     </Tabs>
   );

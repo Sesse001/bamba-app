@@ -1,12 +1,12 @@
 // app/(tabs)/profile.tsx
-// Profile — account info, stats, preferences, legal, delete, sign out.
+// Profile — account info, stats, preferences, learning progress, legal, delete, sign out.
 //
-// Delete Account is now wired up to services/account.js.
-// Flow: tap "Delete account" → confirmation modal → deleteAccount()
-//       → success (auth gate redirects) OR error (shown in modal)
-//
-// Re-auth handling: if deleteAccount() returns requiresReauth: true,
-// we show the user a clear message and offer to sign in again.
+// LEARNING PROGRESS section:
+//   - Per-tier breakdown for active language
+//   - Each tier row is tappable → opens Tier Detail
+//   - Stacked bar: green = completed, grey = skipped, empty = remaining
+//   - Current tier highlighted
+//   - Locked tiers shown dimmed but still tappable (Tier Detail handles lock display)
 
 import { useState, useCallback } from 'react';
 import {
@@ -32,7 +32,15 @@ import {
   scheduleDailyReminder,
   cancelDailyReminder,
 } from '../../services/notifications';
-import { getActiveLanguageId, getLanguage } from '../../services/languages';
+import {
+  getActiveLanguageId,
+  getLanguage,
+} from '../../services/languages';
+import { getFullLessonPool } from '../../services/content';
+import {
+  getTierProgressSummary,
+  getCurrentTier,
+} from '../../services/progress';
 import { deleteAccount } from '../../services/account';
 
 export default function Profile() {
@@ -45,6 +53,11 @@ export default function Profile() {
   const [displayName, setDisplayName] = useState('');
   const [email, setEmail] = useState('');
   const [contributionCount, setContributionCount] = useState(0);
+
+  // Learning progress
+  const [activeLanguage, setActiveLanguage] = useState(null);
+  const [tierBreakdown, setTierBreakdown] = useState([]);
+  const [currentTier, setCurrentTier] = useState(null);
 
   // Reminder state
   const [reminderEnabled, setReminderEnabled] = useState(false);
@@ -76,14 +89,56 @@ export default function Profile() {
     setDisplayName(current.displayName || '');
     setEmail(current.email || '');
 
+    // Contribution count
     try {
       const countRes = await getUserContributionCount(current.uid);
       if (countRes.ok) setContributionCount(countRes.count);
     } catch {}
 
+    // Reminder preference
     try {
       const prefRes = await getReminderPreference(current.uid);
       if (prefRes.ok) setReminderEnabled(prefRes.enabled);
+    } catch {}
+
+    // Learning progress — tier breakdown for active language
+    try {
+      const activeRes = await getActiveLanguageId(current.uid);
+      if (activeRes.ok && activeRes.languageId) {
+        const langRes = await getLanguage(activeRes.languageId);
+        if (langRes.ok) {
+          setActiveLanguage(langRes.data);
+
+          const poolRes = await getFullLessonPool(activeRes.languageId);
+          if (poolRes.ok) {
+            const allItems = poolRes.data;
+
+            const tiersPresent = [
+              ...new Set(
+                allItems.map((i) => i.tier).filter((t) => typeof t === 'number')
+              ),
+            ].sort((a, b) => a - b);
+
+            const breakdown = [];
+            for (const tier of tiersPresent) {
+              const summary = await getTierProgressSummary(
+                current.uid,
+                allItems,
+                tier
+              );
+              if (summary.ok) {
+                breakdown.push({ tier, ...summary.data });
+              }
+            }
+            setTierBreakdown(breakdown);
+
+            const tierRes = await getCurrentTier(current.uid, allItems);
+            if (tierRes.ok) {
+              setCurrentTier(tierRes.data.tier);
+            }
+          }
+        }
+      }
     } catch {}
 
     setLoading(false);
@@ -129,24 +184,18 @@ export default function Profile() {
     setShowSignOutWarning(true);
   };
 
-  // ─────────────────────────────────────────────
-  // NAVIGATION
-  // ─────────────────────────────────────────────
-  const handleAbout = () => {
-    router.push('/(tabs)/about');
+  const handleAbout = () => router.push('/(tabs)/about');
+  const handlePrivacy = () => router.push('/legal/privacy');
+  const handleTerms = () => router.push('/legal/terms');
+
+  const handleTierPress = (tierNumber) => {
+    if (!activeLanguage) return;
+    router.push({
+      pathname: '/(tabs)/tier-detail',
+      params: { tier: String(tierNumber), languageId: activeLanguage.id },
+    });
   };
 
-  const handlePrivacy = () => {
-    router.push('/legal/privacy');
-  };
-
-  const handleTerms = () => {
-    router.push('/legal/terms');
-  };
-
-  // ─────────────────────────────────────────────
-  // DELETE ACCOUNT
-  // ─────────────────────────────────────────────
   const handleDeleteAccountPress = () => {
     setDeleteError(null);
     setRequiresReauth(false);
@@ -161,14 +210,11 @@ export default function Profile() {
     const result = await deleteAccount();
 
     if (result.ok) {
-      // Auth gate detects sign-out and routes to Welcome.
-      // Modal can close — the screen will unmount.
       setShowDeleteModal(false);
       setDeleting(false);
       return;
     }
 
-    // Failure — show error in modal
     setDeleting(false);
     setDeleteError(result.error || 'Could not delete account');
 
@@ -178,23 +224,18 @@ export default function Profile() {
   };
 
   const handleCloseDeleteModal = () => {
-    if (deleting) return; // Prevent close during deletion
+    if (deleting) return;
     setShowDeleteModal(false);
     setDeleteError(null);
     setRequiresReauth(false);
   };
 
   const handleReauthAndRetry = async () => {
-    // Sign out and route to email screen so user can sign in again.
-    // After re-auth, they can come back to Profile → Delete account.
     setShowDeleteModal(false);
     await signOutUser();
     router.push('/(auth)/email');
   };
 
-  // ─────────────────────────────────────────────
-  // REMINDER TOGGLE
-  // ─────────────────────────────────────────────
   const handleReminderToggle = async (nextValue) => {
     if (reminderSaving || !user) return;
 
@@ -242,9 +283,6 @@ export default function Profile() {
     Linking.openSettings().catch(() => {});
   };
 
-  // ─────────────────────────────────────────────
-  // LOADING
-  // ─────────────────────────────────────────────
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -255,9 +293,6 @@ export default function Profile() {
     );
   }
 
-  // ─────────────────────────────────────────────
-  // FATAL LOAD ERROR
-  // ─────────────────────────────────────────────
   if (loadError) {
     return (
       <SafeAreaView style={styles.container}>
@@ -282,26 +317,21 @@ export default function Profile() {
     );
   }
 
-  // ─────────────────────────────────────────────
-  // NORMAL RENDER
-  // ─────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
       >
-        {/* Top bar */}
         <View style={styles.topBar}>
           <Pressable onPress={handleBack} hitSlop={12}>
             <Text style={styles.backLink}>← Home</Text>
           </Pressable>
         </View>
 
-        {/* Header */}
         <Text style={styles.title}>Account</Text>
 
-        {/* Avatar + identity */}
+        {/* Identity */}
         <View style={styles.identityCard}>
           <View style={styles.avatar}>
             <Text style={styles.avatarText}>
@@ -322,7 +352,6 @@ export default function Profile() {
           </View>
         </View>
 
-        {/* Guest warning badge */}
         {isGuest && (
           <View style={styles.guestNotice}>
             <Text style={styles.guestNoticeIcon}>⚠️</Text>
@@ -341,6 +370,76 @@ export default function Profile() {
             <Text style={styles.statValue}>{contributionCount}</Text>
           </View>
         </View>
+
+        {/* Learning progress — tappable tiers */}
+        {activeLanguage && tierBreakdown.length > 0 && (
+          <>
+            <Text style={styles.sectionLabel}>
+              LEARNING PROGRESS · {activeLanguage.name.toUpperCase()}
+            </Text>
+            <View style={styles.progressCard}>
+              {tierBreakdown.map((t) => {
+                const isCurrent = t.tier === currentTier;
+                const tierCompleted = t.completed;
+                const tierSkipped = t.skipped;
+                const tierRemaining = t.remaining;
+                const total = t.total || 1;
+
+                const completedPct = (tierCompleted / total) * 100;
+                const skippedPct = (tierSkipped / total) * 100;
+
+                return (
+                  <Pressable
+                    key={t.tier}
+                    style={[
+                      styles.tierRow,
+                      isCurrent && styles.tierRowCurrent,
+                    ]}
+                    onPress={() => handleTierPress(t.tier)}
+                  >
+                    <View style={styles.tierRowTop}>
+                      <Text
+                        style={[
+                          styles.tierRowLabel,
+                          isCurrent && styles.tierRowLabelCurrent,
+                        ]}
+                      >
+                        Tier {t.tier}
+                        {isCurrent ? ' · current' : ''}
+                        {t.isComplete ? ' ✓' : ''}
+                      </Text>
+                      <Text style={styles.tierRowChevron}>›</Text>
+                    </View>
+
+                    {/* Stacked progress bar */}
+                    <View style={styles.tierBarWrap}>
+                      <View
+                        style={[
+                          styles.tierBarCompleted,
+                          { width: `${completedPct}%` },
+                        ]}
+                      />
+                      <View
+                        style={[
+                          styles.tierBarSkipped,
+                          {
+                            width: `${skippedPct}%`,
+                            left: `${completedPct}%`,
+                          },
+                        ]}
+                      />
+                    </View>
+
+                    <Text style={styles.tierRowDetail}>
+                      {tierCompleted} completed · {tierSkipped} skipped ·{' '}
+                      {tierRemaining} remaining
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </>
+        )}
 
         {/* Preferences */}
         <Text style={styles.sectionLabel}>PREFERENCES</Text>
@@ -432,7 +531,7 @@ export default function Profile() {
         <View style={{ height: Spacing.huge }} />
       </ScrollView>
 
-      {/* Sign-out warning modal */}
+      {/* Sign-out modal */}
       <Modal
         visible={showSignOutWarning}
         transparent
@@ -509,7 +608,7 @@ export default function Profile() {
         </View>
       </Modal>
 
-      {/* Delete account modal — now fully wired */}
+      {/* Delete account modal */}
       <Modal
         visible={showDeleteModal}
         transparent
@@ -616,7 +715,6 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.xxl,
   },
 
-  // Identity
   identityCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -648,7 +746,6 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
   },
 
-  // Guest notice
   guestNotice: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -668,7 +765,6 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
 
-  // Section
   sectionLabel: {
     ...Typography.label,
     color: Colors.textSecondary,
@@ -676,7 +772,6 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.md,
   },
 
-  // Stats
   statsCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -692,7 +787,67 @@ const styles = StyleSheet.create({
   statLabel: { ...Typography.body, color: Colors.textSecondary },
   statValue: { ...Typography.numberSmall, color: Colors.text },
 
-  // Preferences
+  // Learning progress
+  progressCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: Radius.lg,
+    padding: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: Spacing.sm,
+  },
+  tierRow: {
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    borderRadius: Radius.md,
+    gap: Spacing.sm,
+  },
+  tierRowCurrent: {
+    backgroundColor: Colors.primaryGlow,
+  },
+  tierRowTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  tierRowLabel: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    fontWeight: '600',
+  },
+  tierRowLabelCurrent: {
+    color: Colors.primaryLight,
+    fontWeight: '700',
+  },
+  tierRowChevron: {
+    ...Typography.h3,
+    color: Colors.textMuted,
+  },
+  tierBarWrap: {
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: Colors.surfaceLight,
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  tierBarCompleted: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    height: '100%',
+    backgroundColor: Colors.success,
+  },
+  tierBarSkipped: {
+    position: 'absolute',
+    top: 0,
+    height: '100%',
+    backgroundColor: Colors.warning,
+  },
+  tierRowDetail: {
+    ...Typography.tiny,
+    color: Colors.textMuted,
+  },
+
   prefCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -730,7 +885,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 
-  // Link card
   linkCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -744,21 +898,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     padding: Spacing.xl,
   },
-  linkText: {
-    ...Typography.body,
-    color: Colors.text,
-  },
-  linkChevron: {
-    ...Typography.h3,
-    color: Colors.textMuted,
-  },
+  linkText: { ...Typography.body, color: Colors.text },
+  linkChevron: { ...Typography.h3, color: Colors.textMuted },
   divider: {
     height: 1,
     backgroundColor: Colors.border,
     marginHorizontal: Spacing.xl,
   },
 
-  // Buttons
   btnPrimary: {
     backgroundColor: Colors.primary,
     paddingVertical: Spacing.lg,
@@ -794,7 +941,6 @@ const styles = StyleSheet.create({
     color: Colors.danger,
   },
 
-  // Modal
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.7)',
@@ -857,11 +1003,8 @@ const styles = StyleSheet.create({
     ...Typography.bodyBold,
     color: Colors.text,
   },
-  modalBtnDisabled: {
-    opacity: 0.6,
-  },
+  modalBtnDisabled: { opacity: 0.6 },
 
-  // Fatal error card
   errorCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -901,7 +1044,6 @@ const styles = StyleSheet.create({
     marginTop: Spacing.md,
   },
 
-  // Inline error
   errorBox: {
     marginTop: Spacing.lg,
     padding: Spacing.md,

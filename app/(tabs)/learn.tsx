@@ -1,18 +1,14 @@
 // app/(tabs)/learn.tsx
-// The learning experience — one card at a time.
+// Learning experience — demo translations + community contributions.
 //
-// Flow:
-//   1. Load the content item (from route param contentId)
-//   2. Show prompt
-//   3. Tap "Reveal" → show translations
-//   4. Optional: "Try your own" → contribution input → submit
-//   5. Tap "Next" → mark completed, advance to next incomplete/unskipped item
-//   6. OR tap "Skip" → mark as skipped, advance to next incomplete/unskipped item
+// Two data sources:
+//   1. learning_content/{id}/translations — demo (curated) translations
+//   2. contributions — user submissions (public read, flagged hidden by design)
 //
-// Skip semantics (Interpretation B):
-//   - Skipped items are removed from the current lesson queue
-//   - Home won't show them again until "Reset skipped" is tapped
-//   - Progress counter doesn't count skipped as completed
+// Review mode:
+//   - Entered from Tier Detail with ?reviewMode=1&fromTier=X&languageId=Y
+//   - Skip button hidden when current item is completed
+//   - Returns to Tier Detail on tier exhaustion
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -31,44 +27,68 @@ import { Colors, Spacing, Radius, Typography } from '../../theme';
 import {
   getContentItem,
   getTranslationsForContent,
-  getDemoLesson,
+  getFullLessonPool,
 } from '../../services/content';
 import {
   markSeen,
   markAttempt,
   markCompleted,
   markSkipped,
+  getProgress,
   getAllProgress,
-  getNextIncompleteItem,
+  getCurrentTier,
+  getTierItems,
   getNextItemAfter,
 } from '../../services/progress';
-import { submitContribution } from '../../services/contributions';
+import {
+  submitContribution,
+  getContributionsForContent,
+} from '../../services/contributions';
 import { getCurrentUser } from '../../services/auth';
 
+// ─── Status badges ───
+const DEMO_BADGE = { label: 'DEMO', color: Colors.primaryLight };
+
 const STATUS_BADGES = {
-  reviewed: { label: 'DEMO', color: Colors.primaryLight },
-  community_supported: { label: 'DEMO', color: Colors.primaryLight },
-  pending: { label: 'DEMO', color: Colors.primaryLight },
-  regional_variant: { label: 'DEMO', color: Colors.primaryLight },
-  flagged: { label: 'DEMO', color: Colors.primaryLight },
+  pending: { label: 'PENDING', color: Colors.textMuted },
+  community_supported: { label: 'COMMUNITY', color: Colors.info },
+  reviewed: { label: 'REVIEWED', color: Colors.success },
+  regional_variant: { label: 'REGIONAL', color: Colors.purple },
+  // flagged should never appear in contributions collection (moved out)
 };
-const DEFAULT_BADGE = { label: 'DEMO', color: Colors.primaryLight };
+
+const DEFAULT_COMMUNITY_BADGE = { label: 'PENDING', color: Colors.textMuted };
 
 export default function Learn() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const initialContentId = params.contentId || null;
+  const reviewMode = params.reviewMode === '1';
+  const fromTier = params.fromTier ? parseInt(params.fromTier, 10) : null;
+  const fromLanguageId = params.languageId || null;
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
   const [content, setContent] = useState(null);
+  const [tier, setTier] = useState(null);
+
+  // Demo translations
   const [translations, setTranslations] = useState([]);
+
+  // Community contributions
+  const [contributions, setContributions] = useState([]);
+  const [communityLoading, setCommunityLoading] = useState(false);
+  const [communityError, setCommunityError] = useState(null);
+
+  // Progress for current item (used to hide skip in review mode if completed)
+  const [itemCompleted, setItemCompleted] = useState(false);
+
   const [revealed, setRevealed] = useState(false);
   const [actionError, setActionError] = useState(null);
   const [skipping, setSkipping] = useState(false);
   const [skipNotice, setSkipNotice] = useState(null);
 
-  // Contribution state
+  // Contribution form
   const [showContribute, setShowContribute] = useState(false);
   const [contribText, setContribText] = useState('');
   const [contribNote, setContribNote] = useState('');
@@ -92,6 +112,9 @@ export default function Learn() {
     setSubmitted(false);
     setSkipping(false);
     setSkipNotice(null);
+    setContributions([]);
+    setCommunityError(null);
+    setItemCompleted(false);
     markedSeenRef.current = false;
     lastContentIdRef.current = contentId;
 
@@ -101,6 +124,7 @@ export default function Learn() {
       return;
     }
 
+    // 1. Fetch content + demo translations
     const contentRes = await getContentItem(contentId);
     if (!contentRes.ok) {
       setLoadError(contentRes.error || "Couldn't load this card");
@@ -108,6 +132,7 @@ export default function Learn() {
       return;
     }
     setContent(contentRes.data);
+    setTier(contentRes.data.tier || null);
 
     const transRes = await getTranslationsForContent(contentId);
     if (transRes.ok) {
@@ -116,16 +141,44 @@ export default function Learn() {
       setTranslations([]);
     }
 
+    // 2. Check progress for current item (needed for review mode UI)
     const user = getCurrentUser();
-    if (user && !markedSeenRef.current) {
-      markedSeenRef.current = true;
+    if (user) {
       try {
-        await markSeen(user.uid, contentId);
+        const progressRes = await getProgress(user.uid, contentId);
+        if (progressRes.ok && progressRes.data) {
+          setItemCompleted(progressRes.data.completed === true);
+        }
       } catch {}
+
+      if (!markedSeenRef.current) {
+        markedSeenRef.current = true;
+        try {
+          await markSeen(user.uid, contentId);
+        } catch {}
+      }
     }
 
     setLoading(false);
+
+    // 3. Fetch community contributions (async, doesn't block render)
+    loadCommunityContributions(contentId);
   }, []);
+
+  const loadCommunityContributions = async (contentId) => {
+    setCommunityLoading(true);
+    setCommunityError(null);
+
+    const result = await getContributionsForContent(contentId, { maxItems: 20 });
+
+    if (result.ok) {
+      setContributions(result.data || []);
+    } else {
+      setCommunityError(result.error || "Couldn't load community contributions");
+    }
+
+    setCommunityLoading(false);
+  };
 
   useEffect(() => {
     loadItem(initialContentId);
@@ -135,8 +188,62 @@ export default function Learn() {
     loadItem(lastContentIdRef.current);
   };
 
+  const handleRetryCommunity = () => {
+    if (lastContentIdRef.current) {
+      loadCommunityContributions(lastContentIdRef.current);
+    }
+  };
+
   // ─────────────────────────────────────────────
-  // REVEAL
+  // ADVANCE WITHIN CURRENT TIER
+  // ─────────────────────────────────────────────
+  const advanceWithinTier = async () => {
+    const user = getCurrentUser();
+    if (!user || !content) {
+      router.replace('/(tabs)/home');
+      return;
+    }
+
+    const [poolRes, progressRes] = await Promise.all([
+      getFullLessonPool(content.languageId),
+      getAllProgress(user.uid),
+    ]);
+
+    if (!poolRes.ok) {
+      // Fallback
+      if (reviewMode && fromTier && fromLanguageId) {
+        router.replace(
+          `/(tabs)/tier-detail?tier=${fromTier}&languageId=${fromLanguageId}`
+        );
+      } else {
+        router.replace('/(tabs)/home');
+      }
+      return;
+    }
+
+    const tierCompute = await getCurrentTier(user.uid, poolRes.data);
+    const userTier = tierCompute.ok ? tierCompute.data.tier : content.tier;
+    const tierItems = getTierItems(poolRes.data, userTier);
+    const progressMap = progressRes.ok ? progressRes.data : {};
+
+    const nextItem = getNextItemAfter(tierItems, content.id, progressMap);
+
+    if (nextItem) {
+      loadItem(nextItem.id);
+    } else {
+      // End of tier
+      if (reviewMode && fromTier && fromLanguageId) {
+        router.replace(
+          `/(tabs)/tier-detail?tier=${fromTier}&languageId=${fromLanguageId}`
+        );
+      } else {
+        router.replace('/(tabs)/home');
+      }
+    }
+  };
+
+  // ─────────────────────────────────────────────
+  // ACTIONS
   // ─────────────────────────────────────────────
   const handleReveal = async () => {
     setRevealed(true);
@@ -149,9 +256,6 @@ export default function Learn() {
     }
   };
 
-  // ─────────────────────────────────────────────
-  // SKIP — mark skipped + advance to next unskipped
-  // ─────────────────────────────────────────────
   const handleSkip = async () => {
     if (skipping) return;
 
@@ -167,42 +271,15 @@ export default function Learn() {
 
     setSkipNotice("Skipped — we'll move to the next one.");
 
-    // Mark as skipped in Firestore
     try {
       await markSkipped(user.uid, content.id);
     } catch {}
 
-    // Fetch lesson + progress to determine what's next
-    const [lessonRes, progressRes] = await Promise.all([
-      getDemoLesson(content.languageId, 30),
-      getAllProgress(user.uid),
-    ]);
-
-    if (!lessonRes.ok) {
-      setSkipping(false);
-      router.replace('/(tabs)/home');
-      return;
-    }
-
-    const progressMap = progressRes.ok ? progressRes.data : {};
-    const nextItem = getNextItemAfter(
-      lessonRes.data,
-      content.id,
-      progressMap
-    );
-
     setTimeout(() => {
-      if (nextItem) {
-        loadItem(nextItem.id);
-      } else {
-        router.replace('/(tabs)/home');
-      }
+      advanceWithinTier();
     }, 800);
   };
 
-  // ─────────────────────────────────────────────
-  // NEXT — mark completed + advance to next incomplete
-  // ─────────────────────────────────────────────
   const handleNext = async () => {
     const user = getCurrentUser();
     if (!user || !content) return;
@@ -213,24 +290,9 @@ export default function Learn() {
       await markCompleted(user.uid, content.id);
     } catch {}
 
-    const lessonRes = await getDemoLesson(content.languageId, 30);
-    if (!lessonRes.ok) {
-      router.replace('/(tabs)/home');
-      return;
-    }
-
-    const nextRes = await getNextIncompleteItem(user.uid, lessonRes.data);
-
-    if (nextRes.ok && nextRes.next && nextRes.next.id !== content.id) {
-      loadItem(nextRes.next.id);
-    } else {
-      router.replace('/(tabs)/home');
-    }
+    await advanceWithinTier();
   };
 
-  // ─────────────────────────────────────────────
-  // SUBMIT CONTRIBUTION
-  // ─────────────────────────────────────────────
   const handleSubmitContribution = async () => {
     if (!contribText.trim()) {
       setActionError('Please enter your expression');
@@ -260,14 +322,24 @@ export default function Learn() {
       setSubmitted(true);
       setContribText('');
       setContribNote('');
+      // Refresh community list to show new contribution
+      loadCommunityContributions(content.id);
     } else {
       setActionError(result.error || 'Could not submit. Please try again.');
     }
   };
 
   const handleBack = () => {
-    router.replace('/(tabs)/home');
+    if (reviewMode && fromTier && fromLanguageId) {
+      router.replace(
+        `/(tabs)/tier-detail?tier=${fromTier}&languageId=${fromLanguageId}`
+      );
+    } else {
+      router.replace('/(tabs)/home');
+    }
   };
+
+  const currentUserId = getCurrentUser()?.uid;
 
   // ─────────────────────────────────────────────
   // RENDER — LOADING
@@ -301,7 +373,7 @@ export default function Learn() {
               <Text style={styles.retryText}>Retry</Text>
             </Pressable>
             <Pressable onPress={handleBack} hitSlop={12}>
-              <Text style={styles.backToHomeText}>Back to Home</Text>
+              <Text style={styles.backToHomeText}>Back</Text>
             </Pressable>
           </View>
         </View>
@@ -312,6 +384,8 @@ export default function Learn() {
   // ─────────────────────────────────────────────
   // RENDER — NORMAL
   // ─────────────────────────────────────────────
+  const showSkipButton = !(reviewMode && itemCompleted);
+
   return (
     <SafeAreaView style={styles.container}>
       <KeyboardAwareScrollView
@@ -324,9 +398,20 @@ export default function Learn() {
         {/* Top bar */}
         <View style={styles.topBar}>
           <Pressable onPress={handleBack} hitSlop={12}>
-            <Text style={styles.backLink}>← Home</Text>
+            <Text style={styles.backLink}>
+              ← {reviewMode ? 'Tier' : 'Home'}
+            </Text>
           </Pressable>
         </View>
+
+        {/* Tier badge */}
+        {tier && (
+          <View style={styles.tierBadgeRow}>
+            <View style={styles.tierBadge}>
+              <Text style={styles.tierBadgeText}>Tier {tier}</Text>
+            </View>
+          </View>
+        )}
 
         {/* Prompt */}
         <View style={styles.promptBlock}>
@@ -346,82 +431,160 @@ export default function Learn() {
               <Text style={styles.btnPrimaryText}>Reveal</Text>
             </Pressable>
 
-            <Pressable
-              style={styles.skipBtn}
-              onPress={handleSkip}
-              disabled={skipping}
-              hitSlop={12}
-            >
-              {skipping ? (
-                <Text style={styles.skipNoticeText}>
-                  {skipNotice || 'Skipping…'}
-                </Text>
-              ) : (
-                <Text style={styles.skipText}>
-                  I don't know this yet — skip
-                </Text>
-              )}
-            </Pressable>
+            {showSkipButton && (
+              <Pressable
+                style={styles.skipBtn}
+                onPress={handleSkip}
+                disabled={skipping}
+                hitSlop={12}
+              >
+                {skipping ? (
+                  <Text style={styles.skipNoticeText}>
+                    {skipNotice || 'Skipping…'}
+                  </Text>
+                ) : (
+                  <Text style={styles.skipText}>
+                    I don't know this yet — skip
+                  </Text>
+                )}
+              </Pressable>
+            )}
           </>
         ) : (
           <>
-            {/* Translations */}
-            <Text style={styles.sectionLabel}>EXPRESSIONS</Text>
+            {/* Demo translations */}
+            <Text style={styles.sectionLabel}>DEMO TRANSLATIONS</Text>
             <View style={styles.translationList}>
-              {translations.map((t) => {
-                const badge = STATUS_BADGES[t.status] || DEFAULT_BADGE;
-                return (
-                  <View key={t.id} style={styles.translationCard}>
-                    <View style={styles.translationHeader}>
-                      <Text style={styles.translationText}>{t.text}</Text>
-                      <View
-                        style={[styles.badge, { borderColor: badge.color }]}
+              {translations.map((t) => (
+                <View key={t.id} style={styles.translationCard}>
+                  <View style={styles.translationHeader}>
+                    <Text style={styles.translationText}>{t.text}</Text>
+                    <View
+                      style={[styles.badge, { borderColor: DEMO_BADGE.color }]}
+                    >
+                      <Text
+                        style={[styles.badgeText, { color: DEMO_BADGE.color }]}
                       >
-                        <Text
-                          style={[styles.badgeText, { color: badge.color }]}
-                        >
-                          {badge.label}
-                        </Text>
-                      </View>
-                    </View>
-                    <View style={styles.translationMetaRow}>
-                      {t.region ? (
-                        <Text style={styles.translationRegion}>
-                          {t.region}
-                        </Text>
-                      ) : null}
-                      {t.region && t.register ? (
-                        <Text style={styles.translationRegion}> · </Text>
-                      ) : null}
-                      {t.register ? (
-                        <Text style={styles.translationRegion}>
-                          {t.register}
-                        </Text>
-                      ) : null}
+                        {DEMO_BADGE.label}
+                      </Text>
                     </View>
                   </View>
-                );
-              })}
+                  <View style={styles.translationMetaRow}>
+                    {t.region ? (
+                      <Text style={styles.translationRegion}>{t.region}</Text>
+                    ) : null}
+                    {t.region && t.register ? (
+                      <Text style={styles.translationRegion}> · </Text>
+                    ) : null}
+                    {t.register ? (
+                      <Text style={styles.translationRegion}>{t.register}</Text>
+                    ) : null}
+                  </View>
+                </View>
+              ))}
               {translations.length === 0 && (
                 <Text style={styles.noTranslation}>
-                  No expressions yet — be the first to add one.
+                  No demo translations for this card yet.
                 </Text>
               )}
             </View>
 
             {translations.length > 0 && (
               <Text style={styles.demoNote}>
-                Demo content — pending native speaker review.
+                Illustrative content · awaiting native-speaker review
               </Text>
             )}
 
+            {/* Community contributions */}
+            {communityLoading && (
+              <Text style={styles.communityLoadingText}>
+                Loading community contributions…
+              </Text>
+            )}
+
+            {!communityLoading && communityError && (
+              <View style={styles.communityErrorBox}>
+                <Text style={styles.communityErrorText}>{communityError}</Text>
+                <Pressable
+                  onPress={handleRetryCommunity}
+                  hitSlop={12}
+                  style={{ marginTop: Spacing.sm }}
+                >
+                  <Text style={styles.communityRetryText}>Retry</Text>
+                </Pressable>
+              </View>
+            )}
+
+            {!communityLoading &&
+              !communityError &&
+              contributions.length > 0 && (
+                <>
+                  <Text style={styles.sectionLabel}>
+                    COMMUNITY CONTRIBUTIONS ({contributions.length})
+                  </Text>
+                  <View style={styles.translationList}>
+                    {contributions.map((c) => {
+                      const badge =
+                        STATUS_BADGES[c.status] || DEFAULT_COMMUNITY_BADGE;
+                      const isMine = c.userId === currentUserId;
+                      return (
+                        <View key={c.id} style={styles.translationCard}>
+                          <View style={styles.translationHeader}>
+                            <Text style={styles.communityText}>{c.text}</Text>
+                            <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                              <View
+                                style={[
+                                  styles.badge,
+                                  { borderColor: badge.color },
+                                ]}
+                              >
+                                <Text
+                                  style={[
+                                    styles.badgeText,
+                                    { color: badge.color },
+                                  ]}
+                                >
+                                  {badge.label}
+                                </Text>
+                              </View>
+                              {isMine && (
+                                <Text style={styles.youIndicator}>(you)</Text>
+                              )}
+                            </View>
+                          </View>
+                          <View style={styles.translationMetaRow}>
+                            {c.region ? (
+                              <Text style={styles.translationRegion}>
+                                {c.region}
+                              </Text>
+                            ) : null}
+                            {c.region && c.register ? (
+                              <Text style={styles.translationRegion}> · </Text>
+                            ) : null}
+                            {c.register ? (
+                              <Text style={styles.translationRegion}>
+                                {c.register}
+                              </Text>
+                            ) : null}
+                          </View>
+                        </View>
+                      );
+                    })}
+                  </View>
+                  <Text style={styles.demoNote}>
+                    Community support does not establish linguistic verification.
+                  </Text>
+                </>
+              )}
+
+            {/* Try your own */}
             {!showContribute && !submitted && (
               <Pressable
                 style={styles.contributeBtn}
                 onPress={() => setShowContribute(true)}
               >
                 <Text style={styles.contributeBtnText}>
-                  ✏️  Try your own
+                  ✏️  Add your own expression
                 </Text>
               </Pressable>
             )}
@@ -501,20 +664,22 @@ export default function Learn() {
               </Text>
             </Pressable>
 
-            <Pressable
-              style={styles.skipBtn}
-              onPress={handleSkip}
-              disabled={skipping}
-              hitSlop={12}
-            >
-              {skipping ? (
-                <Text style={styles.skipNoticeText}>
-                  {skipNotice || 'Skipping…'}
-                </Text>
-              ) : (
-                <Text style={styles.skipText}>Skip without completing</Text>
-              )}
-            </Pressable>
+            {showSkipButton && (
+              <Pressable
+                style={styles.skipBtn}
+                onPress={handleSkip}
+                disabled={skipping}
+                hitSlop={12}
+              >
+                {skipping ? (
+                  <Text style={styles.skipNoticeText}>
+                    {skipNotice || 'Skipping…'}
+                  </Text>
+                ) : (
+                  <Text style={styles.skipText}>Skip without completing</Text>
+                )}
+              </Pressable>
+            )}
           </>
         )}
 
@@ -537,8 +702,25 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.xxl,
   },
 
-  topBar: { marginBottom: Spacing.xxl },
+  topBar: { marginBottom: Spacing.lg },
   backLink: { ...Typography.body, color: Colors.primaryLight },
+
+  tierBadgeRow: { marginBottom: Spacing.lg },
+  tierBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: Colors.primaryGlow,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: Radius.pill,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+  },
+  tierBadgeText: {
+    ...Typography.tiny,
+    color: Colors.primaryLight,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
 
   promptBlock: {
     alignItems: 'center',
@@ -585,7 +767,12 @@ const styles = StyleSheet.create({
     gap: Spacing.md,
   },
   translationText: {
-    ...Typography.h2,
+    ...Typography.h3,
+    color: Colors.text,
+    flex: 1,
+  },
+  communityText: {
+    ...Typography.h3,
     color: Colors.text,
     flex: 1,
   },
@@ -599,6 +786,11 @@ const styles = StyleSheet.create({
     ...Typography.tiny,
     fontWeight: '700',
     letterSpacing: 0.5,
+  },
+  youIndicator: {
+    ...Typography.tiny,
+    color: Colors.textMuted,
+    fontStyle: 'italic',
   },
   translationMetaRow: {
     flexDirection: 'row',
@@ -619,7 +811,34 @@ const styles = StyleSheet.create({
     color: Colors.textMuted,
     textAlign: 'center',
     fontStyle: 'italic',
-    marginTop: Spacing.md,
+    marginTop: Spacing.sm,
+  },
+
+  communityLoadingText: {
+    ...Typography.caption,
+    color: Colors.textMuted,
+    textAlign: 'center',
+    marginTop: Spacing.lg,
+    fontStyle: 'italic',
+  },
+  communityErrorBox: {
+    marginTop: Spacing.lg,
+    padding: Spacing.md,
+    borderRadius: Radius.md,
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderWidth: 1,
+    borderColor: Colors.danger,
+    alignItems: 'center',
+  },
+  communityErrorText: {
+    ...Typography.caption,
+    color: Colors.danger,
+    textAlign: 'center',
+  },
+  communityRetryText: {
+    ...Typography.caption,
+    color: Colors.primaryLight,
+    fontWeight: '700',
   },
 
   skipBtn: {

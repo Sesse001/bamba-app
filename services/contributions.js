@@ -1,22 +1,19 @@
 // services/contributions.js
 // User-submitted translations/expressions.
 //
-// Structure:
-//   contributions/{contributionId}
-//     userId, contentId, languageId, text, note, region, register
-//     status: "pending" | "community_supported" | "reviewed" | "regional_variant" | "flagged"
-//     isDemo: false
-//     createdAt, updatedAt
-//     reviewCount, lastReviewedAt, promotedToTranslationId (M5)
+// Two collections:
+//   contributions/{id}            — visible contributions (public read)
+//   flagged_contributions/{id}    — flagged contributions (owner read only)
 //
-// Key principle: contributions are NEVER auto-correct.
-// Every submission starts as "pending". Community reaction and human review
-// move it through states — but never mark it "correct/incorrect".
+// A contribution lives in exactly one collection at a time.
+// Flagging = MOVING from `contributions` to `flagged_contributions`.
 
 import {
   collection,
   doc,
   addDoc,
+  setDoc,
+  deleteDoc,
   getDoc,
   getDocs,
   query,
@@ -27,7 +24,9 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 
-const COL = 'contributions';
+const CONTRIBUTIONS_COL = 'contributions';
+const FLAGGED_COL = 'flagged_contributions';
+const CONTENT_COL = 'learning_content';
 
 // ─────────────────────────────────────────────────────────────
 // WRITE
@@ -35,16 +34,7 @@ const COL = 'contributions';
 
 /**
  * Submit a new contribution for a learning content item.
- *
- * @param {string} uid
- * @param {object} payload
- * @param {string} payload.contentId   — e.g. "zu_greeting_hello"
- * @param {string} payload.languageId  — e.g. "zu"
- * @param {string} payload.text        — user's expression, e.g. "Sawubona"
- * @param {string} [payload.note]      — optional context
- * @param {string} [payload.region]    — optional region tag
- * @param {string} [payload.register]  — "formal" | "casual" | null
- * @returns {Promise<{ ok: boolean, id?: string, error?: string }>}
+ * Always lands in `contributions` with status: 'pending'.
  */
 export async function submitContribution(uid, payload) {
   try {
@@ -59,7 +49,7 @@ export async function submitContribution(uid, payload) {
       return { ok: false, error: 'Please enter your expression' };
     }
 
-    const ref = await addDoc(collection(db, COL), {
+    const ref = await addDoc(collection(db, CONTRIBUTIONS_COL), {
       userId: uid,
       contentId,
       languageId,
@@ -71,7 +61,6 @@ export async function submitContribution(uid, payload) {
       isDemo: false,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-      // Placeholders for M5 review lifecycle
       reviewCount: 0,
       lastReviewedAt: null,
       promotedToTranslationId: null,
@@ -83,20 +72,50 @@ export async function submitContribution(uid, payload) {
   }
 }
 
+/**
+ * Flag a contribution (admin/reviewer operation).
+ * Moves it from `contributions` to `flagged_contributions`.
+ * NOT called from the client in M6 — kept for future admin tooling.
+ */
+export async function flagContribution(
+  contributionId,
+  { flaggedBy, flagReason } = {}
+) {
+  try {
+    if (!contributionId) return { ok: false, error: 'Missing contributionId' };
+
+    const originalRef = doc(db, CONTRIBUTIONS_COL, contributionId);
+    const snap = await getDoc(originalRef);
+
+    if (!snap.exists()) {
+      return { ok: false, error: 'Contribution not found' };
+    }
+
+    const original = snap.data();
+
+    // Write to flagged_contributions
+    const flaggedRef = doc(db, FLAGGED_COL, contributionId);
+    await setDoc(flaggedRef, {
+      ...original,
+      status: 'flagged',
+      flaggedAt: serverTimestamp(),
+      flaggedBy: flaggedBy || null,
+      flagReason: flagReason || null,
+    });
+
+    // Remove from visible contributions
+    await deleteDoc(originalRef);
+
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+}
+
 // ─────────────────────────────────────────────────────────────
-// READ
+// READ — VISIBLE CONTRIBUTIONS
 // ─────────────────────────────────────────────────────────────
 
-/**
- * Fetch contributions for a specific learning content item.
- * Used to display community alternatives alongside the seeded translations.
- *
- * @param {string} contentId
- * @param {object} [options]
- * @param {number} [options.maxItems]   default 20
- * @param {boolean} [options.pendingOnly]  if true, only return status="pending"
- * @returns {Promise<{ ok: boolean, data?: Array, error?: string }>}
- */
 export async function getContributionsForContent(contentId, options = {}) {
   try {
     if (!contentId) {
@@ -114,7 +133,7 @@ export async function getContributionsForContent(contentId, options = {}) {
     constraints.push(orderBy('createdAt', 'desc'));
     constraints.push(limit(maxItems));
 
-    const q = query(collection(db, COL), ...constraints);
+    const q = query(collection(db, CONTRIBUTIONS_COL), ...constraints);
     const snap = await getDocs(q);
     const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
@@ -124,19 +143,13 @@ export async function getContributionsForContent(contentId, options = {}) {
   }
 }
 
-/**
- * Fetch a single contribution by ID.
- *
- * @param {string} contributionId
- * @returns {Promise<{ ok: boolean, data?: object, error?: string }>}
- */
 export async function getContribution(contributionId) {
   try {
     if (!contributionId) {
       return { ok: false, error: 'Missing contributionId' };
     }
 
-    const ref = doc(db, COL, contributionId);
+    const ref = doc(db, CONTRIBUTIONS_COL, contributionId);
     const snap = await getDoc(ref);
 
     if (!snap.exists()) {
@@ -149,15 +162,6 @@ export async function getContribution(contributionId) {
   }
 }
 
-/**
- * Fetch all contributions submitted by a specific user.
- * Used in M5 for the "My Contributions" screen.
- *
- * @param {string} uid
- * @param {object} [options]
- * @param {number} [options.maxItems]   default 50
- * @returns {Promise<{ ok: boolean, data?: Array, error?: string }>}
- */
 export async function getMyContributions(uid, options = {}) {
   try {
     if (!uid) {
@@ -167,7 +171,7 @@ export async function getMyContributions(uid, options = {}) {
     const { maxItems = 50 } = options;
 
     const q = query(
-      collection(db, COL),
+      collection(db, CONTRIBUTIONS_COL),
       where('userId', '==', uid),
       orderBy('createdAt', 'desc'),
       limit(maxItems)
@@ -181,23 +185,50 @@ export async function getMyContributions(uid, options = {}) {
   }
 }
 
-/**
- * Count how many contributions a user has submitted.
- * Useful for profile stats and to display on Home.
- *
- * @param {string} uid
- * @returns {Promise<{ ok: boolean, count?: number, error?: string }>}
- */
 export async function getUserContributionCount(uid) {
   try {
     if (!uid) {
       return { ok: false, error: 'Missing uid' };
     }
 
-    const q = query(collection(db, COL), where('userId', '==', uid));
+    const q = query(
+      collection(db, CONTRIBUTIONS_COL),
+      where('userId', '==', uid)
+    );
     const snap = await getDocs(q);
 
     return { ok: true, count: snap.size };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// READ — FLAGGED CONTRIBUTIONS
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * Fetch the current user's flagged contributions.
+ * Used by My Contributions to show the owner their flagged items.
+ */
+export async function getMyFlaggedContributions(uid, options = {}) {
+  try {
+    if (!uid) {
+      return { ok: false, error: 'Missing uid' };
+    }
+
+    const { maxItems = 50 } = options;
+
+    const q = query(
+      collection(db, FLAGGED_COL),
+      where('userId', '==', uid),
+      orderBy('createdAt', 'desc'),
+      limit(maxItems)
+    );
+    const snap = await getDocs(q);
+    const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    return { ok: true, data };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
   }
@@ -208,22 +239,10 @@ export async function getUserContributionCount(uid) {
 // ─────────────────────────────────────────────────────────────
 
 /**
- * Fetch all contributions by a user, enriched with the parent content's prompt.
+ * Fetch ALL of the user's contributions (visible + flagged), enriched
+ * with parent content, merged and sorted by createdAt desc.
  *
- * For each contribution:
- *   - loads the contribution row
- *   - loads the learning_content doc it points to
- *   - returns a merged object: { ...contribution, contentPrompt, contentLanguageId }
- *
- * If the parent content has been deleted, contentPrompt will be null.
- * We don't drop the row — the contribution history should remain intact.
- *
- * Used by the "My Contributions" screen (M5-2).
- *
- * @param {string} uid
- * @param {object} [options]
- * @param {number} [options.maxItems]   default 50
- * @returns {Promise<{ ok: boolean, data?: Array, error?: string }>}
+ * Flagged items get `flagged: true` so the UI can render them differently.
  */
 export async function getMyContributionsWithContent(uid, options = {}) {
   try {
@@ -233,43 +252,44 @@ export async function getMyContributionsWithContent(uid, options = {}) {
 
     const { maxItems = 50 } = options;
 
-    // 1. Fetch raw contributions
-    const q = query(
-      collection(db, COL),
-      where('userId', '==', uid),
-      orderBy('createdAt', 'desc'),
-      limit(maxItems)
-    );
-    const snap = await getDocs(q);
-    const contributions = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    const [visibleRes, flaggedRes] = await Promise.all([
+      getMyContributions(uid, { maxItems }),
+      getMyFlaggedContributions(uid, { maxItems }),
+    ]);
 
-    if (contributions.length === 0) {
+    const visible = visibleRes.ok ? visibleRes.data : [];
+    const flagged = flaggedRes.ok
+      ? flaggedRes.data.map((f) => ({ ...f, flagged: true }))
+      : [];
+
+    const merged = [...visible, ...flagged].sort((a, b) => {
+      const aTime = a.createdAt?.toMillis?.() || 0;
+      const bTime = b.createdAt?.toMillis?.() || 0;
+      return bTime - aTime;
+    });
+
+    if (merged.length === 0) {
       return { ok: true, data: [] };
     }
 
-    // 2. Gather unique contentIds so we don't fetch the same parent twice
     const uniqueContentIds = [
-      ...new Set(contributions.map((c) => c.contentId).filter(Boolean)),
+      ...new Set(merged.map((c) => c.contentId).filter(Boolean)),
     ];
 
-    // 3. Fetch each parent learning_content doc in parallel
     const contentMap = {};
     await Promise.all(
       uniqueContentIds.map(async (contentId) => {
         try {
-          const ref = doc(db, 'learning_content', contentId);
+          const ref = doc(db, CONTENT_COL, contentId);
           const contentSnap = await getDoc(ref);
           if (contentSnap.exists()) {
             contentMap[contentId] = contentSnap.data();
           }
-        } catch {
-          // Ignore individual fetch errors — the contribution stays in the list
-        }
+        } catch {}
       })
     );
 
-    // 4. Merge
-    const enriched = contributions.map((c) => {
+    const enriched = merged.map((c) => {
       const parent = contentMap[c.contentId] || null;
       return {
         ...c,

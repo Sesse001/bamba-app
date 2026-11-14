@@ -5,7 +5,9 @@
 //   learning_content/{contentId}
 //   learning_content/{contentId}/translations/{translationId}
 //
-// Content is seeded via scripts/seed.js.
+// Content items now have a `tier` field (1-4).
+// Use getContentByLanguage with options.tier to filter by tier.
+//
 // User-submitted translations live in `contributions/` (separate collection).
 // This file only READS.
 
@@ -29,12 +31,16 @@ const CONTENT_COL = 'learning_content';
 
 /**
  * Fetch learning content for a specific language.
- * Sorted by `order` ascending (curriculum flow).
  *
- * @param {string} languageId  e.g. "zu"
+ * Options:
+ *   - maxItems: cap result count (default 100 — full pool)
+ *   - tier: filter to a specific tier (1, 2, 3, 4) — optional
+ *   - lessonId: filter to a specific lessonId — optional
+ *
+ * Sorted by `order` ascending.
+ *
+ * @param {string} languageId
  * @param {object} [options]
- * @param {number} [options.maxItems]  default 50
- * @param {string} [options.lessonId]  optional filter for a specific lesson
  * @returns {Promise<{ ok: boolean, data?: Array, error?: string }>}
  */
 export async function getContentByLanguage(languageId, options = {}) {
@@ -43,13 +49,13 @@ export async function getContentByLanguage(languageId, options = {}) {
       return { ok: false, error: 'No language ID provided' };
     }
 
-    const { maxItems = 50, lessonId = null } = options;
+    const { maxItems = 100, tier = null, lessonId = null } = options;
 
-    // Build query — Firestore needs the composite index for where + orderBy.
-    // We'll add the index once the seed runs and Firestore complains.
-    const constraints = [
-      where('languageId', '==', languageId),
-    ];
+    const constraints = [where('languageId', '==', languageId)];
+
+    if (tier !== null) {
+      constraints.push(where('tier', '==', tier));
+    }
 
     if (lessonId) {
       constraints.push(where('lessonId', '==', lessonId));
@@ -99,8 +105,6 @@ export async function getContentItem(contentId) {
 
 /**
  * Fetch all translations for a given content item.
- * Includes both demo/curated translations AND any linked community ones
- * that have been promoted into the subcollection.
  *
  * @param {string} contentId
  * @returns {Promise<{ ok: boolean, data?: Array, error?: string }>}
@@ -152,14 +156,35 @@ export async function getTranslation(contentId, translationId) {
 // ─────────────────────────────────────────────────────────────
 
 /**
- * Fetch the first "lesson" worth of content for a language.
- * For the demo, this returns the first N items of the language —
- * sorted by `order` ascending.
+ * Fetch the full content pool for a language (all 100 items across 4 tiers).
+ * Used by Home and Learn to compute tier progression from actual progress.
  *
  * @param {string} languageId
- * @param {number} [count]  default 10
  * @returns {Promise<{ ok: boolean, data?: Array, error?: string }>}
  */
-export async function getDemoLesson(languageId, count = 10) {
-  return getContentByLanguage(languageId, { maxItems: count });
+export async function getFullLessonPool(languageId) {
+  return getContentByLanguage(languageId, { maxItems: 100 });
+}
+
+/**
+ * Fetch only a specific tier's items for a language.
+ * Used when we know the user's current tier (from progress.js).
+ *
+ * @param {string} languageId
+ * @param {number} tier
+ * @returns {Promise<{ ok: boolean, data?: Array, error?: string }>}
+ */
+export async function getTierContent(languageId, tier) {
+  return getContentByLanguage(languageId, { maxItems: 30, tier });
+}
+
+/**
+ * Deprecated alias for backward compatibility.
+ * Fetches the full pool. Use getFullLessonPool for clarity.
+ *
+ * @param {string} languageId
+ * @param {number} [count]  — ignored, always returns full pool (up to 100)
+ */
+export async function getDemoLesson(languageId, count) {
+  return getFullLessonPool(languageId);
 }
