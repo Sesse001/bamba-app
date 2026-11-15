@@ -1,12 +1,7 @@
 // app/(tabs)/profile.tsx
-// Profile — account info, stats, preferences, learning progress, legal, delete, sign out.
+// Profile — account, stats, learning progress, preferences, legal, delete, sign out.
 //
-// LEARNING PROGRESS section:
-//   - Per-tier breakdown for active language
-//   - Each tier row is tappable → opens Tier Detail
-//   - Stacked bar: green = completed, grey = skipped, empty = remaining
-//   - Current tier highlighted
-//   - Locked tiers shown dimmed but still tappable (Tier Detail handles lock display)
+// Daily reminder toggle now actually schedules a local notification at 7 PM.
 
 import { useState, useCallback } from 'react';
 import {
@@ -62,6 +57,7 @@ export default function Profile() {
   // Reminder state
   const [reminderEnabled, setReminderEnabled] = useState(false);
   const [reminderSaving, setReminderSaving] = useState(false);
+  const [reminderFeedback, setReminderFeedback] = useState(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
 
   // Sign out state
@@ -89,19 +85,16 @@ export default function Profile() {
     setDisplayName(current.displayName || '');
     setEmail(current.email || '');
 
-    // Contribution count
     try {
       const countRes = await getUserContributionCount(current.uid);
       if (countRes.ok) setContributionCount(countRes.count);
     } catch {}
 
-    // Reminder preference
     try {
       const prefRes = await getReminderPreference(current.uid);
       if (prefRes.ok) setReminderEnabled(prefRes.enabled);
     } catch {}
 
-    // Learning progress — tier breakdown for active language
     try {
       const activeRes = await getActiveLanguageId(current.uid);
       if (activeRes.ok && activeRes.languageId) {
@@ -236,13 +229,18 @@ export default function Profile() {
     router.push('/(auth)/email');
   };
 
+  // ─────────────────────────────────────────────
+  // REMINDER TOGGLE — actually schedules the notification
+  // ─────────────────────────────────────────────
   const handleReminderToggle = async (nextValue) => {
     if (reminderSaving || !user) return;
 
     setReminderSaving(true);
     setPermissionDenied(false);
+    setReminderFeedback(null);
 
     if (nextValue) {
+      // Turning ON
       const permRes = await requestPermission();
 
       if (!permRes.ok || !permRes.granted) {
@@ -253,27 +251,41 @@ export default function Profile() {
         return;
       }
 
-      let languageName = null;
-      try {
-        const activeRes = await getActiveLanguageId(user.uid);
-        if (activeRes.ok && activeRes.languageId) {
-          const langRes = await getLanguage(activeRes.languageId);
-          if (langRes.ok) languageName = langRes.data.name;
-        }
-      } catch {}
-
+      // Permission granted — schedule notification with language name
+      const languageName = activeLanguage?.name || null;
       const schedRes = await scheduleDailyReminder(languageName);
+
       if (!schedRes.ok) {
+        setReminderFeedback({
+          type: 'error',
+          text: schedRes.error || 'Could not schedule reminder',
+        });
         setReminderSaving(false);
         return;
       }
 
+      // Save preference to Firestore
       const saveRes = await setReminderPreference(user.uid, true);
-      if (saveRes.ok) setReminderEnabled(true);
+      if (saveRes.ok) {
+        setReminderEnabled(true);
+        setReminderFeedback({
+          type: 'success',
+          text: 'Daily reminder scheduled for 7 PM.',
+        });
+        setTimeout(() => setReminderFeedback(null), 4000);
+      }
     } else {
+      // Turning OFF
       await cancelDailyReminder();
       const saveRes = await setReminderPreference(user.uid, false);
-      if (saveRes.ok) setReminderEnabled(false);
+      if (saveRes.ok) {
+        setReminderEnabled(false);
+        setReminderFeedback({
+          type: 'success',
+          text: 'Daily reminder canceled.',
+        });
+        setTimeout(() => setReminderFeedback(null), 4000);
+      }
     }
 
     setReminderSaving(false);
@@ -371,7 +383,7 @@ export default function Profile() {
           </View>
         </View>
 
-        {/* Learning progress — tappable tiers */}
+        {/* Learning progress */}
         {activeLanguage && tierBreakdown.length > 0 && (
           <>
             <Text style={styles.sectionLabel}>
@@ -411,7 +423,6 @@ export default function Profile() {
                       <Text style={styles.tierRowChevron}>›</Text>
                     </View>
 
-                    {/* Stacked progress bar */}
                     <View style={styles.tierBarWrap}>
                       <View
                         style={[
@@ -467,6 +478,28 @@ export default function Profile() {
               />
             )}
           </View>
+
+          {reminderFeedback && (
+            <View
+              style={[
+                styles.reminderFeedbackBox,
+                reminderFeedback.type === 'error'
+                  ? styles.reminderFeedbackError
+                  : styles.reminderFeedbackSuccess,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.reminderFeedbackText,
+                  reminderFeedback.type === 'error'
+                    ? { color: Colors.danger }
+                    : { color: Colors.success },
+                ]}
+              >
+                {reminderFeedback.text}
+              </Text>
+            </View>
+          )}
 
           {permissionDenied && (
             <Pressable
@@ -787,7 +820,6 @@ const styles = StyleSheet.create({
   statLabel: { ...Typography.body, color: Colors.textSecondary },
   statValue: { ...Typography.numberSmall, color: Colors.text },
 
-  // Learning progress
   progressCard: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
@@ -871,6 +903,23 @@ const styles = StyleSheet.create({
   prefSubtitle: {
     ...Typography.caption,
     color: Colors.textSecondary,
+  },
+  reminderFeedbackBox: {
+    padding: Spacing.sm,
+    borderRadius: Radius.sm,
+    borderWidth: 1,
+  },
+  reminderFeedbackSuccess: {
+    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    borderColor: Colors.success,
+  },
+  reminderFeedbackError: {
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderColor: Colors.danger,
+  },
+  reminderFeedbackText: {
+    ...Typography.tiny,
+    textAlign: 'center',
   },
   permDeniedBox: {
     padding: Spacing.md,

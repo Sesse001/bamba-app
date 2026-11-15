@@ -1,37 +1,18 @@
 // services/notifications.js
-// Push notification plumbing — permission, preference, and daily reminder scheduling.
+// Push notification plumbing — permission + preference + scheduling.
 //
-// Uses LOCAL notifications (device-scheduled, no server needed).
-// Works in Expo Go AND production builds.
-//
-// Preference stored at: users/{uid}.reminderEnabled = true | false
-// Fixed reminder time: 19:00 (7:00 PM) local device time.
-// Time picker deferred to a later milestone.
-//
-// Lazy-loads expo-notifications to avoid the Expo Go warning on app launch.
+// LOCAL notifications at 7:00 PM local device time.
+// Content: "Time to practice your {languageName}!"
+// Re-schedules on app launch via ensureReminderScheduled().
 
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from './firebase';
 
 const USERS_COL = 'users';
 
-// ─────────────────────────────────────────────────────────────
-// NOTIFICATION TEXT
-// ─────────────────────────────────────────────────────────────
-
-const REMINDER_HOUR = 19; // 7:00 PM
+// Daily reminder at 7:00 PM local device time
+const REMINDER_HOUR = 19;
 const REMINDER_MINUTE = 0;
-
-/**
- * Build the reminder notification body.
- * @param {string} languageName — e.g. "isiZulu"
- */
-function buildReminderBody(languageName) {
-  if (!languageName) {
-    return 'Time to practice your South African language!';
-  }
-  return `Time to practice your ${languageName}!`;
-}
 
 // ─────────────────────────────────────────────────────────────
 // LAZY MODULE LOAD
@@ -56,9 +37,6 @@ async function getNotificationsModule() {
 // PERMISSIONS
 // ─────────────────────────────────────────────────────────────
 
-/**
- * Get the current notification permission status without prompting.
- */
 export async function getPermissionStatus() {
   try {
     const Notifications = await getNotificationsModule();
@@ -74,9 +52,6 @@ export async function getPermissionStatus() {
   }
 }
 
-/**
- * Request notification permission.
- */
 export async function requestPermission() {
   try {
     const Notifications = await getNotificationsModule();
@@ -92,12 +67,9 @@ export async function requestPermission() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// PREFERENCES (stored on users/{uid})
+// PREFERENCES
 // ─────────────────────────────────────────────────────────────
 
-/**
- * Read the user's reminder preference.
- */
 export async function getReminderPreference(uid) {
   try {
     if (!uid) return { ok: false, error: 'Missing uid' };
@@ -116,9 +88,6 @@ export async function getReminderPreference(uid) {
   }
 }
 
-/**
- * Write the user's reminder preference.
- */
 export async function setReminderPreference(uid, enabled) {
   try {
     if (!uid) return { ok: false, error: 'Missing uid' };
@@ -135,13 +104,39 @@ export async function setReminderPreference(uid, enabled) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// DAILY REMINDER SCHEDULING
+// SCHEDULING
 // ─────────────────────────────────────────────────────────────
 
-/**
- * Cancel any existing daily reminder notifications.
- * Safe to call even if none exist.
- */
+export async function scheduleDailyReminder(languageName) {
+  try {
+    const Notifications = await getNotificationsModule();
+
+    // Cancel existing to avoid duplicates
+    await Notifications.cancelAllScheduledNotificationsAsync();
+
+    // Schedule new daily notification
+    const notificationId = await Notifications.scheduleNotificationAsync({
+      content: {
+        title: 'Bamba',
+        body: languageName
+          ? `Time to practice your ${languageName}!`
+          : 'Time to practice your South African language!',
+        sound: true,
+        priority: Notifications.AndroidNotificationPriority.DEFAULT,
+      },
+      trigger: {
+        type: 'daily',
+        hour: REMINDER_HOUR,
+        minute: REMINDER_MINUTE,
+      },
+    });
+
+    return { ok: true, notificationId };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+}
+
 export async function cancelDailyReminder() {
   try {
     const Notifications = await getNotificationsModule();
@@ -152,86 +147,52 @@ export async function cancelDailyReminder() {
   }
 }
 
-/**
- * Schedule a repeating daily reminder at REMINDER_HOUR:REMINDER_MINUTE.
- * Cancels any existing scheduled notifications first.
- *
- * @param {string} languageName — used in the notification body
- */
-export async function scheduleDailyReminder(languageName) {
+export async function getScheduledNotifications() {
   try {
     const Notifications = await getNotificationsModule();
-
-    // Cancel existing to avoid duplicates
-    await Notifications.cancelAllScheduledNotificationsAsync();
-
-    // Schedule a recurring daily notification.
-    // Expo's DailyTriggerInput uses hour + minute in 24h format,
-    // and fires the next occurrence at that time.
-    const id = await Notifications.scheduleNotificationAsync({
-      content: {
-        title: 'Bamba',
-        body: buildReminderBody(languageName),
-        sound: true,
-      },
-      trigger: {
-        type: 'daily',
-        hour: REMINDER_HOUR,
-        minute: REMINDER_MINUTE,
-      },
-    });
-
-    return { ok: true, id };
+    const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+    return {
+      ok: true,
+      scheduled: scheduled.length > 0,
+      count: scheduled.length,
+      identifiers: scheduled.map((n) => n.identifier),
+    };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
   }
 }
 
-/**
- * Ensure a daily reminder is scheduled if the user has it enabled.
- * Called on app launch / Home focus so the schedule survives app restarts.
- *
- * @param {string} uid
- * @param {string} languageName
- * @returns {Promise<{ ok: boolean, scheduled?: boolean, error?: string }>}
- */
+// ─────────────────────────────────────────────────────────────
+// RE-SCHEDULING (called on app launch)
+// ─────────────────────────────────────────────────────────────
+
 export async function ensureReminderScheduled(uid, languageName) {
   try {
+    if (!uid) return { ok: false, error: 'Missing uid' };
+
     const prefRes = await getReminderPreference(uid);
-    if (!prefRes.ok || !prefRes.enabled) {
-      return { ok: true, scheduled: false };
+    if (!prefRes.ok) return prefRes;
+
+    const reminderEnabled = prefRes.enabled;
+
+    const scheduleRes = await getScheduledNotifications();
+    if (!scheduleRes.ok) return scheduleRes;
+
+    const isScheduled = scheduleRes.scheduled;
+
+    if (reminderEnabled && !isScheduled) {
+      const schedRes = await scheduleDailyReminder(languageName);
+      if (!schedRes.ok) return schedRes;
+      return { ok: true, action: 'scheduled' };
     }
 
-    const schedRes = await scheduleDailyReminder(languageName);
-    if (!schedRes.ok) {
-      return { ok: false, error: schedRes.error };
+    if (!reminderEnabled && isScheduled) {
+      const cancelRes = await cancelDailyReminder();
+      if (!cancelRes.ok) return cancelRes;
+      return { ok: true, action: 'canceled' };
     }
 
-    return { ok: true, scheduled: true };
-  } catch (error) {
-    return { ok: false, error: error.message || String(error) };
-  }
-}
-
-// ─────────────────────────────────────────────────────────────
-// FOREGROUND HANDLER
-// ─────────────────────────────────────────────────────────────
-
-/**
- * Configure how notifications behave when the app is in the foreground.
- * Called once on app launch.
- */
-export async function configureNotificationHandler() {
-  try {
-    const Notifications = await getNotificationsModule();
-    Notifications.setNotificationHandler({
-      handleNotification: async () => ({
-        shouldShowAlert: true,
-        shouldPlaySound: true,
-        shouldSetBadge: false,
-      }),
-    });
-    return { ok: true };
+    return { ok: true, action: 'none' };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
   }
