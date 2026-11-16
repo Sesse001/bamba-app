@@ -1,7 +1,6 @@
 // app/(tabs)/profile.tsx
 // Profile — account, stats, learning progress, preferences, legal, delete, sign out.
-//
-// Daily reminder toggle now actually schedules a local notification at 7 PM.
+// Shows REVIEWER section (Review Queue link) for sub_admin / admin only.
 
 import { useState, useCallback } from 'react';
 import {
@@ -37,6 +36,7 @@ import {
   getCurrentTier,
 } from '../../services/progress';
 import { deleteAccount } from '../../services/account';
+import { getUserRole, ROLES } from '../../services/roles';
 
 export default function Profile() {
   const router = useRouter();
@@ -53,6 +53,9 @@ export default function Profile() {
   const [activeLanguage, setActiveLanguage] = useState(null);
   const [tierBreakdown, setTierBreakdown] = useState([]);
   const [currentTier, setCurrentTier] = useState(null);
+
+  // Reviewer status
+  const [isReviewer, setIsReviewer] = useState(false);
 
   // Reminder state
   const [reminderEnabled, setReminderEnabled] = useState(false);
@@ -85,16 +88,29 @@ export default function Profile() {
     setDisplayName(current.displayName || '');
     setEmail(current.email || '');
 
+    // Check reviewer status
+    try {
+      const roleRes = await getUserRole(current.uid);
+      if (roleRes.ok) {
+        setIsReviewer(
+          roleRes.role === ROLES.SUB_ADMIN || roleRes.role === ROLES.ADMIN
+        );
+      }
+    } catch {}
+
+    // Contribution count
     try {
       const countRes = await getUserContributionCount(current.uid);
       if (countRes.ok) setContributionCount(countRes.count);
     } catch {}
 
+    // Reminder preference
     try {
       const prefRes = await getReminderPreference(current.uid);
       if (prefRes.ok) setReminderEnabled(prefRes.enabled);
     } catch {}
 
+    // Learning progress
     try {
       const activeRes = await getActiveLanguageId(current.uid);
       if (activeRes.ok && activeRes.languageId) {
@@ -180,6 +196,7 @@ export default function Profile() {
   const handleAbout = () => router.push('/(tabs)/about');
   const handlePrivacy = () => router.push('/legal/privacy');
   const handleTerms = () => router.push('/legal/terms');
+  const handleReviewQueue = () => router.push('/(tabs)/review-queue');
 
   const handleTierPress = (tierNumber) => {
     if (!activeLanguage) return;
@@ -229,9 +246,6 @@ export default function Profile() {
     router.push('/(auth)/email');
   };
 
-  // ─────────────────────────────────────────────
-  // REMINDER TOGGLE — actually schedules the notification
-  // ─────────────────────────────────────────────
   const handleReminderToggle = async (nextValue) => {
     if (reminderSaving || !user) return;
 
@@ -240,7 +254,6 @@ export default function Profile() {
     setReminderFeedback(null);
 
     if (nextValue) {
-      // Turning ON
       const permRes = await requestPermission();
 
       if (!permRes.ok || !permRes.granted) {
@@ -251,7 +264,6 @@ export default function Profile() {
         return;
       }
 
-      // Permission granted — schedule notification with language name
       const languageName = activeLanguage?.name || null;
       const schedRes = await scheduleDailyReminder(languageName);
 
@@ -264,7 +276,6 @@ export default function Profile() {
         return;
       }
 
-      // Save preference to Firestore
       const saveRes = await setReminderPreference(user.uid, true);
       if (saveRes.ok) {
         setReminderEnabled(true);
@@ -275,7 +286,6 @@ export default function Profile() {
         setTimeout(() => setReminderFeedback(null), 4000);
       }
     } else {
-      // Turning OFF
       await cancelDailyReminder();
       const saveRes = await setReminderPreference(user.uid, false);
       if (saveRes.ok) {
@@ -512,6 +522,19 @@ export default function Profile() {
             </Pressable>
           )}
         </View>
+
+        {/* Reviewer section — only for sub_admin / admin */}
+        {isReviewer && (
+          <>
+            <Text style={styles.sectionLabel}>REVIEWER</Text>
+            <View style={styles.linkCard}>
+              <Pressable style={styles.linkRow} onPress={handleReviewQueue}>
+                <Text style={styles.linkText}>Review Queue</Text>
+                <Text style={styles.linkChevron}>›</Text>
+              </Pressable>
+            </View>
+          </>
+        )}
 
         {/* About & Legal */}
         <Text style={styles.sectionLabel}>ABOUT & LEGAL</Text>
