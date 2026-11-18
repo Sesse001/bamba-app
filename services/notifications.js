@@ -1,9 +1,5 @@
 // services/notifications.js
 // Push notification plumbing — permission + preference + scheduling.
-//
-// LOCAL notifications at 7:00 PM local device time.
-// Content: "Time to practice your {languageName}!"
-// Re-schedules on app launch via ensureReminderScheduled().
 
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from './firebase';
@@ -114,7 +110,7 @@ export async function scheduleDailyReminder(languageName) {
     // Cancel existing to avoid duplicates
     await Notifications.cancelAllScheduledNotificationsAsync();
 
-    // Schedule new daily notification
+    // Schedule new daily notification (Updated SDK 50+ syntax)
     const notificationId = await Notifications.scheduleNotificationAsync({
       content: {
         title: 'Bamba',
@@ -122,10 +118,9 @@ export async function scheduleDailyReminder(languageName) {
           ? `Time to practice your ${languageName}!`
           : 'Time to practice your South African language!',
         sound: true,
-        priority: Notifications.AndroidNotificationPriority.DEFAULT,
       },
       trigger: {
-        type: 'daily',
+        type: Notifications.SchedulableTriggerInputTypes.DAILY,
         hour: REMINDER_HOUR,
         minute: REMINDER_MINUTE,
       },
@@ -181,9 +176,13 @@ export async function ensureReminderScheduled(uid, languageName) {
     const isScheduled = scheduleRes.scheduled;
 
     if (reminderEnabled && !isScheduled) {
-      const schedRes = await scheduleDailyReminder(languageName);
-      if (!schedRes.ok) return schedRes;
-      return { ok: true, action: 'scheduled' };
+      // Check permission first so we don't spam a request on app launch
+      const permRes = await getPermissionStatus();
+      if (permRes.ok && permRes.granted) {
+        const schedRes = await scheduleDailyReminder(languageName);
+        if (!schedRes.ok) return schedRes;
+        return { ok: true, action: 'scheduled' };
+      }
     }
 
     if (!reminderEnabled && isScheduled) {

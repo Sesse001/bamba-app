@@ -1,14 +1,5 @@
 // app/(tabs)/learn.tsx
 // Learning experience — demo translations + community contributions.
-//
-// Two data sources:
-//   1. learning_content/{id}/translations — demo (curated) translations
-//   2. contributions — user submissions (public read, flagged hidden by design)
-//
-// Review mode:
-//   - Entered from Tier Detail with ?reviewMode=1&fromTier=X&languageId=Y
-//   - Skip button hidden when current item is completed
-//   - Returns to Tier Detail on tier exhaustion
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
@@ -54,7 +45,6 @@ const STATUS_BADGES = {
   community_supported: { label: 'COMMUNITY', color: Colors.info },
   reviewed: { label: 'REVIEWED', color: Colors.success },
   regional_variant: { label: 'REGIONAL', color: Colors.purple },
-  // flagged should never appear in contributions collection (moved out)
 };
 
 const DEFAULT_COMMUNITY_BADGE = { label: 'PENDING', color: Colors.textMuted };
@@ -72,15 +62,10 @@ export default function Learn() {
   const [content, setContent] = useState(null);
   const [tier, setTier] = useState(null);
 
-  // Demo translations
   const [translations, setTranslations] = useState([]);
-
-  // Community contributions
   const [contributions, setContributions] = useState([]);
   const [communityLoading, setCommunityLoading] = useState(false);
   const [communityError, setCommunityError] = useState(null);
-
-  // Progress for current item (used to hide skip in review mode if completed)
   const [itemCompleted, setItemCompleted] = useState(false);
 
   const [revealed, setRevealed] = useState(false);
@@ -124,7 +109,6 @@ export default function Learn() {
       return;
     }
 
-    // 1. Fetch content + demo translations
     const contentRes = await getContentItem(contentId);
     if (!contentRes.ok) {
       setLoadError(contentRes.error || "Couldn't load this card");
@@ -141,7 +125,6 @@ export default function Learn() {
       setTranslations([]);
     }
 
-    // 2. Check progress for current item (needed for review mode UI)
     const user = getCurrentUser();
     if (user) {
       try {
@@ -160,8 +143,6 @@ export default function Learn() {
     }
 
     setLoading(false);
-
-    // 3. Fetch community contributions (async, doesn't block render)
     loadCommunityContributions(contentId);
   }, []);
 
@@ -210,7 +191,6 @@ export default function Learn() {
     ]);
 
     if (!poolRes.ok) {
-      // Fallback
       if (reviewMode && fromTier && fromLanguageId) {
         router.replace(
           `/(tabs)/tier-detail?tier=${fromTier}&languageId=${fromLanguageId}`
@@ -231,7 +211,6 @@ export default function Learn() {
     if (nextItem) {
       loadItem(nextItem.id);
     } else {
-      // End of tier
       if (reviewMode && fromTier && fromLanguageId) {
         router.replace(
           `/(tabs)/tier-detail?tier=${fromTier}&languageId=${fromLanguageId}`
@@ -322,7 +301,6 @@ export default function Learn() {
       setSubmitted(true);
       setContribText('');
       setContribNote('');
-      // Refresh community list to show new contribution
       loadCommunityContributions(content.id);
     } else {
       setActionError(result.error || 'Could not submit. Please try again.');
@@ -395,7 +373,6 @@ export default function Learn() {
         enableOnAndroid={true}
         extraHeight={120}
       >
-        {/* Top bar */}
         <View style={styles.topBar}>
           <Pressable onPress={handleBack} hitSlop={12}>
             <Text style={styles.backLink}>
@@ -404,7 +381,6 @@ export default function Learn() {
           </Pressable>
         </View>
 
-        {/* Tier badge */}
         {tier && (
           <View style={styles.tierBadgeRow}>
             <View style={styles.tierBadge}>
@@ -413,7 +389,6 @@ export default function Learn() {
           </View>
         )}
 
-        {/* Prompt */}
         <View style={styles.promptBlock}>
           <Text style={styles.promptLabel}>
             TRANSLATE TO {content?.languageId?.toUpperCase()}
@@ -424,7 +399,6 @@ export default function Learn() {
           </Text>
         </View>
 
-        {/* Reveal */}
         {!revealed ? (
           <>
             <Pressable style={styles.btnPrimary} onPress={handleReveal}>
@@ -452,7 +426,6 @@ export default function Learn() {
           </>
         ) : (
           <>
-            {/* Demo translations */}
             <Text style={styles.sectionLabel}>DEMO TRANSLATIONS</Text>
             <View style={styles.translationList}>
               {translations.map((t) => (
@@ -495,7 +468,6 @@ export default function Learn() {
               </Text>
             )}
 
-            {/* Community contributions */}
             {communityLoading && (
               <Text style={styles.communityLoadingText}>
                 Loading community contributions…
@@ -577,7 +549,7 @@ export default function Learn() {
                 </>
               )}
 
-            {/* Try your own */}
+            {/* Try your own - Form */}
             {!showContribute && !submitted && (
               <Pressable
                 style={styles.contributeBtn}
@@ -643,12 +615,23 @@ export default function Learn() {
               </View>
             )}
 
+            {/* Success message with Continue */}
             {submitted && (
               <View style={styles.successBox}>
                 <Text style={styles.successTitle}>✅ Submitted</Text>
                 <Text style={styles.successText}>
                   Thanks! Your contribution is pending review.
                 </Text>
+                <Pressable
+                  style={[styles.btnPrimary, { marginTop: Spacing.lg }]}
+                  onPress={() => {
+                    setSubmitted(false);
+                    setShowContribute(false);
+                    handleNext();
+                  }}
+                >
+                  <Text style={styles.btnPrimaryText}>Continue →</Text>
+                </Pressable>
               </View>
             )}
 
@@ -658,13 +641,14 @@ export default function Learn() {
               </View>
             )}
 
-            <Pressable style={styles.btnNext} onPress={handleNext}>
-              <Text style={styles.btnNextText}>
-                {submitted ? 'Continue' : 'Next'} →
-              </Text>
-            </Pressable>
+            {/* Next Button (Hidden if just submitted) */}
+            {!submitted && (
+              <Pressable style={styles.btnNext} onPress={handleNext}>
+                <Text style={styles.btnNextText}>Next →</Text>
+              </Pressable>
+            )}
 
-            {showSkipButton && (
+            {showSkipButton && !submitted && (
               <Pressable
                 style={styles.skipBtn}
                 onPress={handleSkip}

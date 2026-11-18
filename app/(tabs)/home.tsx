@@ -1,17 +1,7 @@
 // app/(tabs)/home.tsx
 // Home dashboard — tiered learning hub.
-//
-// Progress display:
-//   - "X of N resolved" (completed + skipped, what unlocks next tier)
-//   - Breakdown: "A completed · B skipped · C remaining"
-//   - Stacked bar: green (completed) + amber (skipped) + empty (remaining)
-//
-// Reset skipped:
-//   - Only available AFTER all 4 tiers are complete
-//   - "Redo X skipped cards" appears in the all-tiers-complete state
-//   - Mid-tier "all skipped" state shows informational text only
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -181,10 +171,7 @@ export default function Home() {
     setLoading(false);
   }, [router]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
-
+  // Only useFocusEffect! This runs on mount AND when the user comes back.
   useFocusEffect(
     useCallback(() => {
       load();
