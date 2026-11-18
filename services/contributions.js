@@ -32,10 +32,6 @@ const CONTENT_COL = 'learning_content';
 // WRITE
 // ─────────────────────────────────────────────────────────────
 
-/**
- * Submit a new contribution for a learning content item.
- * Always lands in `contributions` with status: 'pending'.
- */
 export async function submitContribution(uid, payload) {
   try {
     if (!uid) return { ok: false, error: 'Not signed in' };
@@ -75,9 +71,8 @@ export async function submitContribution(uid, payload) {
 /**
  * Flag a contribution (admin/reviewer operation).
  * Moves it from `contributions` to `flagged_contributions`.
- * NOT called from the client in M6 — kept for future admin tooling.
  */
-export async function flagContribution(
+export async function flagAndRemove(
   contributionId,
   { flaggedBy, flagReason } = {}
 ) {
@@ -112,9 +107,83 @@ export async function flagContribution(
   }
 }
 
+/**
+ * Approve a contribution (Reviewer action)
+ */
+export async function approveContribution(contributionId, reviewerId) {
+  try {
+    const ref = doc(db, CONTRIBUTIONS_COL, contributionId);
+    await setDoc(ref, {
+      status: 'reviewed',
+      lastReviewedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      reviewedBy: reviewerId || null,
+    }, { merge: true });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+}
+
+/**
+ * Mark a contribution as a regional variant (Reviewer action)
+ */
+export async function markRegionalVariant(contributionId, reviewerId, region) {
+  try {
+    const ref = doc(db, CONTRIBUTIONS_COL, contributionId);
+    await setDoc(ref, {
+      status: 'regional_variant',
+      region: region || null,
+      lastReviewedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      reviewedBy: reviewerId || null,
+    }, { merge: true });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+}
+
 // ─────────────────────────────────────────────────────────────
 // READ — VISIBLE CONTRIBUTIONS
 // ─────────────────────────────────────────────────────────────
+
+/**
+ * Get ALL pending contributions for the Review Queue
+ */
+export async function getPendingContributions(maxItems = 50) {
+  try {
+    const q = query(
+      collection(db, CONTRIBUTIONS_COL),
+      where('status', '==', 'pending'),
+      orderBy('createdAt', 'asc'),
+      limit(maxItems)
+    );
+    const snap = await getDocs(q);
+    const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    return { ok: true, data };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+}
+
+/**
+ * Get ALL flagged contributions for admin view
+ */
+export async function getAllFlaggedContributions(maxItems = 50) {
+  try {
+    const q = query(
+      collection(db, FLAGGED_COL),
+      orderBy('createdAt', 'desc'),
+      limit(maxItems)
+    );
+    const snap = await getDocs(q);
+    const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    return { ok: true, data };
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) };
+  }
+}
 
 export async function getContributionsForContent(contentId, options = {}) {
   try {
@@ -207,10 +276,6 @@ export async function getUserContributionCount(uid) {
 // READ — FLAGGED CONTRIBUTIONS
 // ─────────────────────────────────────────────────────────────
 
-/**
- * Fetch the current user's flagged contributions.
- * Used by My Contributions to show the owner their flagged items.
- */
 export async function getMyFlaggedContributions(uid, options = {}) {
   try {
     if (!uid) {
@@ -238,12 +303,6 @@ export async function getMyFlaggedContributions(uid, options = {}) {
 // ENRICHED READS
 // ─────────────────────────────────────────────────────────────
 
-/**
- * Fetch ALL of the user's contributions (visible + flagged), enriched
- * with parent content, merged and sorted by createdAt desc.
- *
- * Flagged items get `flagged: true` so the UI can render them differently.
- */
 export async function getMyContributionsWithContent(uid, options = {}) {
   try {
     if (!uid) {
