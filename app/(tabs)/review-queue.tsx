@@ -3,12 +3,6 @@
 //
 // Only accessible to sub_admin and admin roles.
 // Non-reviewers see an access denied message.
-//
-// Each pending contribution shows:
-//   - The submitted expression
-//   - The parent prompt + language
-//   - Date submitted
-//   - Action buttons: Approve / Flag / Regional variant
 
 import { useState, useCallback } from 'react';
 import {
@@ -31,7 +25,10 @@ import {
   approveContribution,
   markRegionalVariant,
   flagAndRemove,
+  promoteToTranslation,
 } from '../../services/contributions';
+// We need to fetch the parent content to show the prompt
+import { getLearningContentItem } from '../../services/content'; 
 
 export default function ReviewQueue() {
   const router = useRouter();
@@ -85,7 +82,26 @@ export default function ReviewQueue() {
     const result = await getPendingContributions({ maxItems: 50 });
 
     if (result.ok) {
-      setContributions(result.data || []);
+      const rawContributions = result.data || [];
+      
+      // Enrich with content prompts
+      const enriched = await Promise.all(
+        rawContributions.map(async (c) => {
+          if (!c.contentId) return c;
+          try {
+            const contentRes = await getLearningContentItem(c.contentId);
+            return {
+              ...c,
+              contentPrompt: contentRes.ok ? contentRes.data?.prompt : 'Unknown prompt',
+              contentLanguageId: contentRes.ok ? contentRes.data?.languageId : c.languageId
+            };
+          } catch {
+            return c;
+          }
+        })
+      );
+
+      setContributions(enriched);
     } else {
       setError(result.error);
     }
@@ -107,8 +123,21 @@ export default function ReviewQueue() {
   // ACTIONS
   // ─────────────────────────────────────────────
   const handleApprove = async (contributionId) => {
+    const user = getCurrentUser();
     setActingOn(contributionId);
-    const result = await approveContribution(contributionId);
+    const result = await approveContribution(contributionId, user?.uid);
+    if (result.ok) {
+      await load();
+    } else {
+      setError(result.error);
+    }
+    setActingOn(null);
+  };
+
+  const handlePromote = async (contributionId) => {
+    const user = getCurrentUser();
+    setActingOn(contributionId);
+    const result = await promoteToTranslation(contributionId, user?.uid);
     if (result.ok) {
       await load();
     } else {
@@ -119,9 +148,11 @@ export default function ReviewQueue() {
 
   const handleRegionalConfirm = async () => {
     if (!showRegionalModal || !regionalInput.trim()) return;
+    const user = getCurrentUser();
     setActingOn(showRegionalModal);
     const result = await markRegionalVariant(
       showRegionalModal,
+      user?.uid,
       regionalInput.trim()
     );
     if (result.ok) {
@@ -287,6 +318,14 @@ export default function ReviewQueue() {
                       ) : (
                         <Text style={styles.approveBtnText}>Approve</Text>
                       )}
+                    </Pressable>
+
+                    <Pressable
+                      style={[styles.actionBtn, styles.promoteBtn]}
+                      onPress={() => handlePromote(c.id)}
+                      disabled={isActing}
+                    >
+                      <Text style={styles.promoteBtnText}>Promote</Text>
                     </Pressable>
 
                     <Pressable
@@ -463,7 +502,7 @@ const styles = StyleSheet.create({
   card: {
     backgroundColor: Colors.surface,
     borderRadius: Radius.lg,
-    padding: Spacing.xl,
+    padding: Spacing.lg,
     borderWidth: 1,
     borderColor: Colors.border,
     gap: Spacing.sm,
@@ -487,34 +526,36 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
 
-  // Actions
+  // Actions - FIXED LAYOUT
   actionsRow: {
     flexDirection: 'row',
-    gap: Spacing.sm,
+    gap: Spacing.xs, // Tighter gap so 4 buttons fit
     marginTop: Spacing.md,
   },
   actionBtn: {
-    flex: 1,
-    paddingVertical: Spacing.md,
+    flex: 1, // Each button takes exactly 1/4 of the space
+    paddingVertical: Spacing.sm, // Shorter height
     borderRadius: Radius.sm,
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 44,
+    minHeight: 40,
   },
   approveBtn: { backgroundColor: Colors.success },
-  approveBtnText: { ...Typography.caption, color: Colors.text, fontWeight: '700' },
+  approveBtnText: { ...Typography.tiny, color: Colors.text, fontWeight: '700' },
+  promoteBtn: { backgroundColor: Colors.primaryGlow, borderWidth: 1, borderColor: Colors.primary },
+  promoteBtnText: { ...Typography.tiny, color: Colors.primaryLight, fontWeight: '700' },
   regionalBtn: {
     backgroundColor: Colors.surfaceLight,
     borderWidth: 1,
     borderColor: Colors.purple,
   },
-  regionalBtnText: { ...Typography.caption, color: Colors.purple, fontWeight: '700' },
+  regionalBtnText: { ...Typography.tiny, color: Colors.purple, fontWeight: '700' },
   flagBtn: {
     backgroundColor: Colors.surfaceLight,
     borderWidth: 1,
     borderColor: Colors.danger,
   },
-  flagBtnText: { ...Typography.caption, color: Colors.danger, fontWeight: '700' },
+  flagBtnText: { ...Typography.tiny, color: Colors.danger, fontWeight: '700' },
 
   // Empty
   emptyCard: {
