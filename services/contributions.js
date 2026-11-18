@@ -149,7 +149,7 @@ export async function markRegionalVariant(contributionId, reviewerId, region) {
 // ─────────────────────────────────────────────────────────────
 
 /**
- * Get ALL pending contributions for the Review Queue
+ * Get ALL pending contributions for the Review Queue, enriched with parent prompt.
  */
 export async function getPendingContributions(maxItems = 50) {
   try {
@@ -161,7 +161,28 @@ export async function getPendingContributions(maxItems = 50) {
     );
     const snap = await getDocs(q);
     const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    return { ok: true, data };
+
+    // Enrich with parent content prompt
+    const enriched = await Promise.all(
+      data.map(async (c) => {
+        if (!c.contentId) return c;
+        try {
+          const contentRef = doc(db, CONTENT_COL, c.contentId);
+          const contentSnap = await getDoc(contentRef);
+          if (contentSnap.exists()) {
+            const parent = contentSnap.data();
+            return {
+              ...c,
+              contentPrompt: parent.prompt || 'Unknown prompt',
+              contentLanguageId: parent.languageId || c.languageId,
+            };
+          }
+        } catch (e) {}
+        return c;
+      })
+    );
+
+    return { ok: true, data: enriched };
   } catch (error) {
     return { ok: false, error: error.message || String(error) };
   }

@@ -27,8 +27,6 @@ import {
   flagAndRemove,
   promoteToTranslation,
 } from '../../services/contributions';
-// We need to fetch the parent content to show the prompt
-import { getLearningContentItem } from '../../services/content'; 
 
 export default function ReviewQueue() {
   const router = useRouter();
@@ -79,29 +77,11 @@ export default function ReviewQueue() {
     setLoading(true);
     setError(null);
 
+    // The backend now handles fetching the prompts!
     const result = await getPendingContributions({ maxItems: 50 });
 
     if (result.ok) {
-      const rawContributions = result.data || [];
-      
-      // Enrich with content prompts
-      const enriched = await Promise.all(
-        rawContributions.map(async (c) => {
-          if (!c.contentId) return c;
-          try {
-            const contentRes = await getLearningContentItem(c.contentId);
-            return {
-              ...c,
-              contentPrompt: contentRes.ok ? contentRes.data?.prompt : 'Unknown prompt',
-              contentLanguageId: contentRes.ok ? contentRes.data?.languageId : c.languageId
-            };
-          } catch {
-            return c;
-          }
-        })
-      );
-
-      setContributions(enriched);
+      setContributions(result.data || []);
     } else {
       setError(result.error);
     }
@@ -526,15 +506,15 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
 
-  // Actions - FIXED LAYOUT
+  // Actions
   actionsRow: {
     flexDirection: 'row',
-    gap: Spacing.xs, // Tighter gap so 4 buttons fit
+    gap: Spacing.xs,
     marginTop: Spacing.md,
   },
   actionBtn: {
-    flex: 1, // Each button takes exactly 1/4 of the space
-    paddingVertical: Spacing.sm, // Shorter height
+    flex: 1,
+    paddingVertical: Spacing.sm,
     borderRadius: Radius.sm,
     alignItems: 'center',
     justifyContent: 'center',
